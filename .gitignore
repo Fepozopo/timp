@@ -1,0 +1,6 @@
+bin/
+.env
+out/
+testdata/
+demofiles/
+pkg/stdimg/mapping.md
