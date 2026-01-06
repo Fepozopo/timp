@@ -3,6 +3,7 @@ package stdimg
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"math"
 	"os"
@@ -630,6 +631,82 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 			return nil, fmt.Errorf("failed to decode composite source: %w", err)
 		}
 		out := Composite(src, img2, op, xOff, yOff)
+		return out, nil
+
+	case "floodfillPaint":
+		// floodfillPaint fillColor fuzz borderColor x y [invert]
+		if len(args) < 5 {
+			return nil, fmt.Errorf("floodfillPaint requires at least 5 args: fillColor fuzz borderColor x y [invert]")
+		}
+		fillStr := args[0]
+		fuzzStr := args[1]
+		borderStr := args[2]
+		xStr := args[3]
+		yStr := args[4]
+		inv := false
+		if len(args) >= 6 && args[5] != "" {
+			b, err := strconv.ParseBool(args[5])
+			if err != nil {
+				return nil, fmt.Errorf("invalid invert flag: %w", err)
+			}
+			inv = b
+		}
+		fillCol, err := parseHexColor(fillStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid fill color: %w", err)
+		}
+		borderCol := color.NRGBA{0, 0, 0, 0}
+		if borderStr != "" {
+			bc, err := parseHexColor(borderStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid border color: %w", err)
+			}
+			if c, ok := bc.(color.NRGBA); ok {
+				borderCol = c
+			} else {
+				r, g, b, a := bc.RGBA()
+				borderCol = color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+			}
+		}
+		// convert fillCol to NRGBA
+		var fillColNRGBA color.NRGBA
+		if c, ok := fillCol.(color.NRGBA); ok {
+			fillColNRGBA = c
+		} else {
+			r, g, b, a := fillCol.RGBA()
+			fillColNRGBA = color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+		}
+		// parse fuzz (interpreted as Lab Delta-E). Support percent like "50%" mapping to 0..100, or numeric deltaE.
+		fuzz := 0.0
+		if len(fuzzStr) > 0 && fuzzStr[len(fuzzStr)-1] == '%' {
+			v, err := strconv.ParseFloat(fuzzStr[:len(fuzzStr)-1], 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid fuzz percent: %w", err)
+			}
+			// percent maps to 0..100 deltaE
+			fuzz = v
+		} else {
+			v, err := strconv.ParseFloat(fuzzStr, 64)
+			if err != nil {
+				return nil, fmt.Errorf("invalid fuzz: %w", err)
+			}
+			fuzz = v
+		}
+		if fuzz < 0 {
+			fuzz = 0
+		}
+		if fuzz > 200 {
+			fuzz = 200
+		}
+		x0, err := strconv.Atoi(xStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid x: %w", err)
+		}
+		y0, err := strconv.Atoi(yStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid y: %w", err)
+		}
+		out := FloodfillPaint(src, fillColNRGBA, fuzz, borderCol, x0, y0, inv)
 		return out, nil
 
 	case "identify":

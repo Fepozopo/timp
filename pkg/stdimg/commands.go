@@ -192,6 +192,12 @@ var Commands = []CommandSpec{
 		Description: "Trim borders within fuzz tolerance.",
 	},
 	{
+		Name:        "floodfillPaint",
+		Args:        []ArgSpec{{"fillColor", "string", true, "", "CSS color or hex (e.g. #ff0000)"}, {"fuzz", "float_or_percent", true, "", "fuzz as Lab delta-E or percent (e.g. 5 or 50%)"}, {"borderColor", "string", false, "", "CSS color or hex for border or empty string"}, {"x", "int", true, "", "start x"}, {"y", "int", true, "", "start y"}, {"invert", "bool", false, "false", "invert fill region"}},
+		Usage:       "floodfillPaint <fillColor> <fuzz> <borderColor> <x> <y> [invert]",
+		Description: "Flood-fill region starting at (x,y) using perceptual fuzz (Lab delta-E).",
+	},
+	{
 		Name:        "annotate",
 		Args:        []ArgSpec{{"text", "string", true, "", "text to draw"}, {"fontPath", "path_or_empty", false, "", "font path (optional)"}, {"size", "float", true, "", "font size"}, {"x", "int", true, "", "x position"}, {"y", "int", true, "", "y position"}, {"color", "string", true, "", "CSS hex or name (e.g. #ff0000)"}},
 		Usage:       "annotate <text> [fontPath] <size> <x> <y> <color>",
