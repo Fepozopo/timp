@@ -1,10 +1,10 @@
-timp — Terminal Image Manipulation Program
+# timp — Terminal Image Manipulation Program
 
-Overview
+## Overview
 
 `timp` is a lightweight image-processing CLI and a pure-Go image engine. The project provides a user-facing CLI in `cmd/timp` and an in-repo stdlib engine in `pkg/stdimg`. CLI helpers and UX utilities live in `pkg/cli`.
 
-Repository layout
+## Repository layout
 
 - `cmd/timp` — CLI entrypoint and `main` package.
 - `pkg/cli` — CLI helpers and UX code used by the command.
@@ -13,7 +13,7 @@ Repository layout
 - `bin/` — output directory (created by the build script).
 - `LICENSE.txt` — project license.
 
-Quick start
+## Quick start
 
 - Build locally:
 
@@ -23,13 +23,13 @@ Quick start
 
   `./scripts/build-all.sh`
 
-Install
+## Install
 
 - From source (module-aware):
 
   `go install github.com/Fepozopo/timp/cmd/timp@latest`
 
-Usage
+## Usage
 
 - General pattern:
 
@@ -37,7 +37,7 @@ Usage
 
 They're running the command you'll be prompted with commands. You'll need to open an image and then select a command.
 
-Development
+## Development
 
 - Run tests:
 
@@ -55,13 +55,13 @@ Development
 
   `./scripts/build-all.sh`
 
-Contributing
+## Contributing
 
 - Fork, branch, implement, run `go test ./...`, and open a PR.
 - Keep public API changes minimal; prefer small, reviewable commits.
 
 - Binaries produced by `scripts/build-all.sh` are saved under `bin/` as `bin/<cmd>-<os>-<arch>` (Windows binaries have `.exe`).
 
-License
+## License
 
 See `LICENSE.txt` for license terms.
