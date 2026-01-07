@@ -64,4 +64,4 @@ They're running the command you'll be prompted with commands. You'll need to ope
 
 ## License
 
-See `LICENSE.txt` for license terms.
+See `LICENSE` for license terms.
