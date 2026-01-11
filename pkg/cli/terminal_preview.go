@@ -15,13 +15,6 @@ import (
 )
 
 // Terminal preview helper for Kitty and iTerm2 inline-image protocols.
-// Exported entry-point: PreviewWand(wand *imagick.MagickWand) error
-//
-// Usage:
-//
-//	if err := PreviewWand(wand); err != nil {
-//	    // preview not available or failed
-//	}
 //
 // Behavior:
 //   - If kitty is detected (KITTY_WINDOW_ID or TERM contains "kitty"), the PNG is sent using
@@ -34,11 +27,9 @@ import (
 //     the PNG is piped to an external sixel renderer (img2sixel or chafa).
 //   - Else, if chafa is available on PATH, it will be invoked to render a terminal-friendly approximation
 //     even for terminals that don't implement the above protocols.
-//   - If none is available, PreviewWand returns an error indicating no supported terminal.
+//   - If none is available, returns an error indicating no supported terminal.
 //
 // Notes:
-//   - The function clones the provided wand to set the image format to PNG without mutating
-//     the caller's wand state.
 //   - Sending binary escape sequences to stdout is expected in this terminal-only preview mode.
 //
 // Debugging helper controlled by PREVIEW_DEBUG=1
@@ -58,7 +49,7 @@ func init() {
 
 func debugf(format string, args ...interface{}) {
 	if previewDebug {
-		fmt.Fprintf(os.Stderr, "termagick-preview: "+format+"\n", args...)
+		fmt.Fprintf(os.Stderr, "timp-preview: "+format+"\n", args...)
 	}
 }
 
@@ -183,11 +174,6 @@ func PreviewSupported() bool {
 	debugf("PreviewSupported -> %v (kitty=%v inline=%v sixel=%v chafa=%v)", supported, isKitty(), isInlineImageCapable(), isSixelCapable(), hasChafa())
 	return supported
 }
-
-// PreviewWand removed: replaced by PreviewImage(img image.Image) which encodes to PNG
-// and uses the same terminal preview backends. The old MagickWand-based API is
-// intentionally removed to avoid introducing a dependency on the ImageMagick Go
-// bindings. Use PreviewImage for pure-Go images.
 
 // PreviewImage encodes an image.Image to PNG and previews it in terminal (delegates to previewPNGBytes).
 func PreviewImage(img image.Image) error {

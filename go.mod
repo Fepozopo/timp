@@ -7,7 +7,6 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/rhysd/go-github-selfupdate v1.2.3
 	golang.org/x/image v0.34.0
-	gopkg.in/gographics/imagick.v3 v3.7.2
 )
 
 require (
