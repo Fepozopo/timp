@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"runtime"
 	"sync"
 )
 
@@ -41,48 +42,110 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 	out := image.NewNRGBA(bounds)
 	w := bounds.Dx()
 	h := bounds.Dy()
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			i := src.PixOffset(x, y)
-			alpha := src.Pix[i+3]
-			// If fully transparent, keep as-is
-			if alpha == 0 {
-				out.Pix[i+0] = src.Pix[i+0]
-				out.Pix[i+1] = src.Pix[i+1]
-				out.Pix[i+2] = src.Pix[i+2]
+	// choose worker count
+	workers := runtime.GOMAXPROCS(0)
+	// fallback to single-threaded for small images
+	if h < 64 || workers <= 1 {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				i := src.PixOffset(x, y)
+				alpha := src.Pix[i+3]
+				// If fully transparent, keep as-is
+				if alpha == 0 {
+					out.Pix[i+0] = src.Pix[i+0]
+					out.Pix[i+1] = src.Pix[i+1]
+					out.Pix[i+2] = src.Pix[i+2]
+					out.Pix[i+3] = alpha
+					continue
+				}
+				r := src.Pix[i+0]
+				g := src.Pix[i+1]
+				b := src.Pix[i+2]
+
+				rLin := srgb8ToLinearLUT(r)
+				gLin := srgb8ToLinearLUT(g)
+				bLin := srgb8ToLinearLUT(b)
+				X, Y, Z := linearToXyz(rLin, gLin, bLin)
+				L, aCh, bCh := xyzToLab(X, Y, Z)
+
+				// Blend in Lab space toward target sepia Lab
+				L2 := (1.0-percentage)*L + percentage*Lsep
+				a2 := (1.0-percentage)*aCh + percentage*asep
+				b2 := (1.0-percentage)*bCh + percentage*bsep
+
+				// Convert back to linear RGB
+				x2, y2, z2 := labToXYZ(L2, a2, b2)
+				r2Lin, g2Lin, b2Lin := xyzToLinearRGB(x2, y2, z2)
+				// Gamma-encode back to sRGB 0..1 using LUT-accelerated approx
+				rOut := linearToSrgbApprox(r2Lin)
+				gOut := linearToSrgbApprox(g2Lin)
+				bOut := linearToSrgbApprox(b2Lin)
+
+				// clamp and write (linearToSrgbApprox returns 0..1)
+				out.Pix[i+0] = uint8(clampFloatToUint8(rOut * 255.0))
+				out.Pix[i+1] = uint8(clampFloatToUint8(gOut * 255.0))
+				out.Pix[i+2] = uint8(clampFloatToUint8(bOut * 255.0))
 				out.Pix[i+3] = alpha
-				continue
 			}
-			r := src.Pix[i+0]
-			g := src.Pix[i+1]
-			b := src.Pix[i+2]
-
-			rLin := srgb8ToLinearLUT(r)
-			gLin := srgb8ToLinearLUT(g)
-			bLin := srgb8ToLinearLUT(b)
-			X, Y, Z := linearToXyz(rLin, gLin, bLin)
-			L, aCh, bCh := xyzToLab(X, Y, Z)
-
-			// Blend in Lab space toward target sepia Lab
-			L2 := (1.0-percentage)*L + percentage*Lsep
-			a2 := (1.0-percentage)*aCh + percentage*asep
-			b2 := (1.0-percentage)*bCh + percentage*bsep
-
-			// Convert back to linear RGB
-			x2, y2, z2 := labToXYZ(L2, a2, b2)
-			r2Lin, g2Lin, b2Lin := xyzToLinearRGB(x2, y2, z2)
-			// Gamma-encode back to sRGB 0..1 using LUT-accelerated approx
-			rOut := linearToSrgbApprox(r2Lin)
-			gOut := linearToSrgbApprox(g2Lin)
-			bOut := linearToSrgbApprox(b2Lin)
-
-			// clamp and write (linearToSrgbApprox returns 0..1)
-			out.Pix[i+0] = uint8(clampFloatToUint8(rOut * 255.0))
-			out.Pix[i+1] = uint8(clampFloatToUint8(gOut * 255.0))
-			out.Pix[i+2] = uint8(clampFloatToUint8(bOut * 255.0))
-			out.Pix[i+3] = alpha
 		}
+		return out
 	}
+
+	// parallel path
+	chunk := (h + workers - 1) / workers
+	var wg sync.WaitGroup
+	for wi := 0; wi < workers; wi++ {
+		y0 := wi * chunk
+		y1 := y0 + chunk
+		if y1 > h {
+			y1 = h
+		}
+		if y0 >= y1 {
+			continue
+		}
+		wg.Add(1)
+		go func(y0, y1 int) {
+			defer wg.Done()
+			for y := y0; y < y1; y++ {
+				for x := 0; x < w; x++ {
+					i := src.PixOffset(x, y)
+					alpha := src.Pix[i+3]
+					if alpha == 0 {
+						out.Pix[i+0] = src.Pix[i+0]
+						out.Pix[i+1] = src.Pix[i+1]
+						out.Pix[i+2] = src.Pix[i+2]
+						out.Pix[i+3] = alpha
+						continue
+					}
+					r := src.Pix[i+0]
+					g := src.Pix[i+1]
+					b := src.Pix[i+2]
+
+					rLin := srgb8ToLinearLUT(r)
+					gLin := srgb8ToLinearLUT(g)
+					bLin := srgb8ToLinearLUT(b)
+					X, Y, Z := linearToXyz(rLin, gLin, bLin)
+					L, aCh, bCh := xyzToLab(X, Y, Z)
+
+					L2 := (1.0-percentage)*L + percentage*Lsep
+					a2 := (1.0-percentage)*aCh + percentage*asep
+					b2 := (1.0-percentage)*bCh + percentage*bsep
+
+					x2, y2, z2 := labToXYZ(L2, a2, b2)
+					r2Lin, g2Lin, b2Lin := xyzToLinearRGB(x2, y2, z2)
+					rOut := linearToSrgbApprox(r2Lin)
+					gOut := linearToSrgbApprox(g2Lin)
+					bOut := linearToSrgbApprox(b2Lin)
+
+					out.Pix[i+0] = uint8(clampFloatToUint8(rOut * 255.0))
+					out.Pix[i+1] = uint8(clampFloatToUint8(gOut * 255.0))
+					out.Pix[i+2] = uint8(clampFloatToUint8(bOut * 255.0))
+					out.Pix[i+3] = alpha
+				}
+			}
+		}(y0, y1)
+	}
+	wg.Wait()
 	return out
 }
 
