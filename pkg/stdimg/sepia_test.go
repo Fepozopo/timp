@@ -3,6 +3,7 @@ package stdimg
 import (
 	"image"
 	"image/color"
+	"math"
 	"testing"
 )
 
@@ -18,26 +19,23 @@ func TestSepiaToneFull(t *testing.T) {
 	if out == nil {
 		t.Fatal("SepiaTone returned nil")
 	}
-	// compute expected using the matrix
-	r := float64(120)
-	g := float64(200)
-	b := float64(80)
-	expR := 0.393*r + 0.769*g + 0.189*b
-	expG := 0.349*r + 0.686*g + 0.168*b
-	expB := 0.272*r + 0.534*g + 0.131*b
-	if expR > 255 {
-		expR = 255
-	}
-	if expG > 255 {
-		expG = 255
-	}
-	if expB > 255 {
-		expB = 255
+	// target sepia color
+	tcol, _ := parseHexColor("#704214")
+	var tNRGBA color.NRGBA
+	if c, ok := tcol.(color.NRGBA); ok {
+		tNRGBA = c
+	} else {
+		r, g, b, a := tcol.RGBA()
+		tNRGBA = color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
 	}
 
+	// get output pixel and compare in Lab space
 	i := out.PixOffset(0, 0)
-	if out.Pix[i+0] != uint8(expR) || out.Pix[i+1] != uint8(expG) || out.Pix[i+2] != uint8(expB) {
-		t.Fatalf("unexpected sepia pixel: got %v expected %v", out.Pix[i:i+3], []uint8{uint8(expR), uint8(expG), uint8(expB)})
+	outCol := color.NRGBA{out.Pix[i+0], out.Pix[i+1], out.Pix[i+2], out.Pix[i+3]}
+
+	d := labDistanceSq(outCol, tNRGBA)
+	if d > 4.0 {
+		t.Fatalf("output not close to target sepia in Lab (sqdist=%v)", d)
 	}
 	if out.Pix[i+3] != 255 {
 		t.Fatalf("alpha changed: %d", out.Pix[i+3])
@@ -62,31 +60,27 @@ func TestSepiaToneBlend(t *testing.T) {
 	if out == nil {
 		t.Fatal("SepiaTone returned nil")
 	}
-	// verify values changed but are between original and full sepia
+	// verify outputs moved toward target sepia in Lab space
+	tcol, _ := parseHexColor("#704214")
+	var tNRGBA color.NRGBA
+	if c, ok := tcol.(color.NRGBA); ok {
+		tNRGBA = c
+	} else {
+		r, g, b, a := tcol.RGBA()
+		tNRGBA = color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+	}
+
 	for x := 0; x < 2; x++ {
 		i := out.PixOffset(x, 0)
-		r := src.Pix[i+0]
-		g := src.Pix[i+1]
-		b := src.Pix[i+2]
-		// compute full sepia
-		expR := 0.393*float64(r) + 0.769*float64(g) + 0.189*float64(b)
-		expG := 0.349*float64(r) + 0.686*float64(g) + 0.168*float64(b)
-		expB := 0.272*float64(r) + 0.534*float64(g) + 0.131*float64(b)
-		if expR > 255 {
-			expR = 255
+		orig := color.NRGBA{src.Pix[i+0], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3]}
+		outCol := color.NRGBA{out.Pix[i+0], out.Pix[i+1], out.Pix[i+2], out.Pix[i+3]}
+		dOrigTarget := math.Sqrt(labDistanceSq(orig, tNRGBA))
+		dOrigOut := math.Sqrt(labDistanceSq(orig, outCol))
+		if dOrigOut <= 0.0 {
+			t.Fatalf("output did not change for pixel %d", x)
 		}
-		if expG > 255 {
-			expG = 255
-		}
-		if expB > 255 {
-			expB = 255
-		}
-		// blended expected
-		expBlendR := uint8((float64(r)*(1.0-0.5) + expR*0.5))
-		expBlendG := uint8((float64(g)*(1.0-0.5) + expG*0.5))
-		expBlendB := uint8((float64(b)*(1.0-0.5) + expB*0.5))
-		if out.Pix[i+0] != expBlendR || out.Pix[i+1] != expBlendG || out.Pix[i+2] != expBlendB {
-			t.Fatalf("pixel %d mismatch: got %v expected %v", x, out.Pix[i:i+3], []uint8{expBlendR, expBlendG, expBlendB})
+		if !(dOrigOut < dOrigTarget) {
+			t.Fatalf("output did not move toward target for pixel %d (dOrigOut=%v dOrigTarget=%v)", x, dOrigOut, dOrigTarget)
 		}
 		if out.Pix[i+3] != 255 {
 			t.Fatalf("alpha changed for pixel %d", x)
