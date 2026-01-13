@@ -290,7 +290,42 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 		out := Vignette(src, radius, sigma, x, y, strength)
 		return out, nil
 
+	case "sepia":
+		// sepia [percentage]
+		// optional percentage: "50%" or "0.5" or "50" (treated as percent)
+		percentage := 1.0
+		if len(args) >= 1 && args[0] != "" {
+			pstr := args[0]
+			if pstr[len(pstr)-1] == '%' {
+				v, err := strconv.ParseFloat(pstr[:len(pstr)-1], 64)
+				if err != nil {
+					return nil, fmt.Errorf("invalid sepia percentage: %w", err)
+				}
+				percentage = v / 100.0
+			} else {
+				v, err := strconv.ParseFloat(pstr, 64)
+				if err != nil {
+					return nil, fmt.Errorf("invalid sepia percentage: %w", err)
+				}
+				// treat values >1 as percent (e.g., "50" -> 0.5)
+				if v > 1 {
+					percentage = v / 100.0
+				} else {
+					percentage = v
+				}
+			}
+			if percentage < 0 {
+				percentage = 0
+			}
+			if percentage > 1 {
+				percentage = 1
+			}
+		}
+		out := SepiaTone(src, percentage)
+		return out, nil
+
 	case "grayscale":
+
 		// simple luminance conversion
 		b := src.Bounds()
 		out := image.NewNRGBA(b)

@@ -221,4 +221,10 @@ var Commands = []CommandSpec{
 		Usage:       "strip",
 		Description: "No-op in memory; metadata handled at encode time.",
 	},
+	{
+		Name:        "sepia",
+		Args:        []ArgSpec{{"percentage", "float_or_percent", false, "100%", "sepia intensity (0..100% or 0..1)"}},
+		Usage:       "sepia [percentage]",
+		Description: "Apply Sepia tone with optional intensity.",
+	},
 }
