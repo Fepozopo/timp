@@ -291,9 +291,14 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 		return out, nil
 
 	case "sepia":
-		// sepia [percentage]
-		// optional percentage: "50%" or "0.5" or "50" (treated as percent)
+		// sepia [percentage midtoneCenter midtoneSigma highlightThreshold highlightSoftness curve]
+		// percentage accepts "50%" or "0.5" or "50"
 		percentage := 1.0
+		midtoneCenter := 50.0
+		midtoneSigma := 20.0
+		highlightThreshold := 80.0
+		highlightSoftness := 10.0
+		curve := 0.12
 		if len(args) >= 1 && args[0] != "" {
 			pstr := args[0]
 			if pstr[len(pstr)-1] == '%' {
@@ -307,7 +312,6 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 				if err != nil {
 					return nil, fmt.Errorf("invalid sepia percentage: %w", err)
 				}
-				// treat values >1 as percent (e.g., "50" -> 0.5)
 				if v > 1 {
 					percentage = v / 100.0
 				} else {
@@ -321,7 +325,57 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 				percentage = 1
 			}
 		}
-		out := SepiaTone(src, percentage)
+		if len(args) >= 2 && args[1] != "" {
+			if v, err := strconv.ParseFloat(args[1], 64); err == nil {
+				midtoneCenter = v
+			}
+		}
+		if len(args) >= 3 && args[2] != "" {
+			if v, err := strconv.ParseFloat(args[2], 64); err == nil {
+				midtoneSigma = v
+			}
+		}
+		if len(args) >= 4 && args[3] != "" {
+			if v, err := strconv.ParseFloat(args[3], 64); err == nil {
+				highlightThreshold = v
+			}
+		}
+		if len(args) >= 5 && args[4] != "" {
+			if v, err := strconv.ParseFloat(args[4], 64); err == nil {
+				highlightSoftness = v
+			}
+		}
+		if len(args) >= 6 && args[5] != "" {
+			if v, err := strconv.ParseFloat(args[5], 64); err == nil {
+				curve = v
+			}
+		}
+		// clamp sensible ranges
+		if midtoneSigma <= 0 {
+			midtoneSigma = 1.0
+		}
+		if midtoneCenter < 0 {
+			midtoneCenter = 0
+		}
+		if midtoneCenter > 100 {
+			midtoneCenter = 100
+		}
+		if highlightThreshold < 0 {
+			highlightThreshold = 0
+		}
+		if highlightThreshold > 100 {
+			highlightThreshold = 100
+		}
+		if highlightSoftness < 0 {
+			highlightSoftness = 0
+		}
+		if curve < 0 {
+			curve = 0
+		}
+		if curve > 1 {
+			curve = 1
+		}
+		out := SepiaTone(src, percentage, midtoneCenter, midtoneSigma, highlightThreshold, highlightSoftness, curve)
 		return out, nil
 
 	case "grayscale":

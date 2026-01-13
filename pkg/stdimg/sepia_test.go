@@ -15,7 +15,8 @@ func TestSepiaToneFull(t *testing.T) {
 	src.Pix[2] = 80  // b
 	src.Pix[3] = 255 // a
 
-	out := SepiaTone(src, 1.0)
+	// call with parameters that ensure full-strength mapping to target (disable S-curve and protections)
+	out := SepiaTone(src, 1.0, 50.0, 1000.0, 100.0, 0.0, 0.0)
 	if out == nil {
 		t.Fatal("SepiaTone returned nil")
 	}
@@ -63,7 +64,7 @@ func TestSepiaToneBlend(t *testing.T) {
 	src.Pix[6] = 255
 	src.Pix[7] = 255
 
-	out := SepiaTone(src, 0.5)
+	out := SepiaTone(src, 0.5, 50.0, 20.0, 80.0, 10.0, 0.12)
 	if out == nil {
 		t.Fatal("SepiaTone returned nil")
 	}

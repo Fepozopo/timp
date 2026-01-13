@@ -9,9 +9,10 @@ import (
 )
 
 // SepiaTone applies a sepia color transform to src using Lab-space blending.
-// Percentage is in 0..1 where 1.0 is full sepia (target color) and 0.0 returns the original image.
+// percentage is in 0..1 where 1.0 is full sepia (target color) and 0.0 returns the original image.
+// It supports midtone weighting, highlight protection and an optional small filmic S-curve on L.
 // Target sepia color chosen: #704214 (a warm mid-brown).
-func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
+func SepiaTone(src *image.NRGBA, percentage, midtoneCenter, midtoneSigma, highlightThreshold, highlightSoftness, curve float64) *image.NRGBA {
 	if src == nil {
 		return nil
 	}
@@ -20,6 +21,31 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 	}
 	if percentage > 1 {
 		percentage = 1
+	}
+	// sanitize other params
+	if midtoneSigma <= 0 {
+		midtoneSigma = 1.0
+	}
+	if midtoneCenter < 0 {
+		midtoneCenter = 0
+	}
+	if midtoneCenter > 100 {
+		midtoneCenter = 100
+	}
+	if highlightThreshold < 0 {
+		highlightThreshold = 0
+	}
+	if highlightThreshold > 100 {
+		highlightThreshold = 100
+	}
+	if highlightSoftness < 0 {
+		highlightSoftness = 0
+	}
+	if curve < 0 {
+		curve = 0
+	}
+	if curve > 1 {
+		curve = 1
 	}
 
 	// Precompute target sepia Lab
@@ -68,10 +94,22 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 				X, Y, Z := linearToXyz(rLin, gLin, bLin)
 				L, aCh, bCh := xyzToLab(X, Y, Z)
 
+				// compute local blend factor pLocal based on midtone weighting and highlight protection
+				pLocal := percentage * midtoneWeight(L, midtoneCenter, midtoneSigma) * highlightProtect(L, highlightThreshold, highlightSoftness)
+				if pLocal < 0 {
+					pLocal = 0
+				}
+				if pLocal > 1 {
+					pLocal = 1
+				}
+
 				// Blend in Lab space toward target sepia Lab
-				L2 := (1.0-percentage)*L + percentage*Lsep
-				a2 := (1.0-percentage)*aCh + percentage*asep
-				b2 := (1.0-percentage)*bCh + percentage*bsep
+				L2 := (1.0-pLocal)*L + pLocal*Lsep
+				a2 := (1.0-pLocal)*aCh + pLocal*asep
+				b2 := (1.0-pLocal)*bCh + pLocal*bsep
+
+				// apply small filmic S-curve to L
+				L2 = applySCurve(L2, curve)
 
 				// Convert back to linear RGB
 				x2, y2, z2 := labToXYZ(L2, a2, b2)
@@ -127,9 +165,19 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 					X, Y, Z := linearToXyz(rLin, gLin, bLin)
 					L, aCh, bCh := xyzToLab(X, Y, Z)
 
-					L2 := (1.0-percentage)*L + percentage*Lsep
-					a2 := (1.0-percentage)*aCh + percentage*asep
-					b2 := (1.0-percentage)*bCh + percentage*bsep
+					pLocal := percentage * midtoneWeight(L, midtoneCenter, midtoneSigma) * highlightProtect(L, highlightThreshold, highlightSoftness)
+					if pLocal < 0 {
+						pLocal = 0
+					}
+					if pLocal > 1 {
+						pLocal = 1
+					}
+
+					L2 := (1.0-pLocal)*L + pLocal*Lsep
+					a2 := (1.0-pLocal)*aCh + pLocal*asep
+					b2 := (1.0-pLocal)*bCh + pLocal*bsep
+
+					L2 = applySCurve(L2, curve)
 
 					x2, y2, z2 := labToXYZ(L2, a2, b2)
 					r2Lin, g2Lin, b2Lin := xyzToLinearRGB(x2, y2, z2)
@@ -199,6 +247,51 @@ func linearToSrgbApprox(v float64) float64 {
 	rn := linearToSrgbLUT[i+1]
 	frac := f - float64(i)
 	return r*(1-frac) + rn*frac
+}
+
+func smoothstep(a, b, x float64) float64 {
+	if a == b {
+		return clamp01((x - a))
+	}
+	t := (x - a) / (b - a)
+	if t <= 0 {
+		return 0
+	}
+	if t >= 1 {
+		return 1
+	}
+	return t * t * (3 - 2*t)
+}
+
+func midtoneWeight(L, mu, sigma float64) float64 {
+	// Gaussian weight over Lab L (which ranges approx 0..100)
+	v := (L - mu) / sigma
+	return math.Exp(-0.5 * v * v)
+}
+
+func highlightProtect(L, thresh, soft float64) float64 {
+	// Returns multiplier in 0..1 that attenuates sepia above thresh with softness band
+	if soft <= 0 {
+		// hard cutoff
+		if L <= thresh {
+			return 1
+		}
+		return 0
+	}
+	return 1.0 - smoothstep(thresh, thresh+soft, L)
+}
+
+func applySCurve(L, curve float64) float64 {
+	// small filmic S-curve applied to normalized L (0..100). curve in 0..1
+	if curve <= 0 {
+		return L
+	}
+	// normalize
+	Ln := L / 100.0
+	// a simple smoothstep-based S curve around midtones
+	s := smoothstep(0.0, 1.0, Ln)
+	out := (1.0-curve)*Ln + curve*s
+	return clamp01(out) * 100.0
 }
 
 // labToXYZ converts Lab to XYZ

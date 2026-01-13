@@ -223,8 +223,8 @@ var Commands = []CommandSpec{
 	},
 	{
 		Name:        "sepia",
-		Args:        []ArgSpec{{"percentage", "float_or_percent", false, "100%", "sepia intensity (0..100% or 0..1)"}},
-		Usage:       "sepia [percentage]",
-		Description: "Apply Sepia tone with optional intensity.",
+		Args:        []ArgSpec{{"percentage", "float_or_percent", false, "70%", "sepia intensity (0..100% or 0..1)"}, {"midtoneCenter", "float", false, "50", "midtone center L (0..100)"}, {"midtoneSigma", "float", false, "20", "midtone width (sigma)"}, {"highlightThreshold", "float", false, "80", "L at which protection starts"}, {"highlightSoftness", "float", false, "10", "softness for highlight protection"}, {"curve", "float", false, "0.12", "filmic S-curve strength (0..1)"}},
+		Usage:       "sepia [percentage] [midtoneCenter] [midtoneSigma] [highlightThreshold] [highlightSoftness] [curve]",
+		Description: "Apply Sepia tone with optional intensity and tonal controls.",
 	},
 }
