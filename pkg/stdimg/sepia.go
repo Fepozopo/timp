@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sync"
 )
 
 // SepiaTone applies a sepia color transform to src using Lab-space blending.
@@ -29,9 +30,10 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 		r, g, b, a := tcol.RGBA()
 		tNRGBA = color.NRGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
 	}
-	trLin := srgbToLinear(tNRGBA.R)
-	tgLin := srgbToLinear(tNRGBA.G)
-	tbLin := srgbToLinear(tNRGBA.B)
+	initSepiaLUTs()
+	trLin := srgb8ToLinearLUT(tNRGBA.R)
+	tgLin := srgb8ToLinearLUT(tNRGBA.G)
+	tbLin := srgb8ToLinearLUT(tNRGBA.B)
 	tX, tY, tZ := linearToXyz(trLin, tgLin, tbLin)
 	Lsep, asep, bsep := xyzToLab(tX, tY, tZ)
 
@@ -55,9 +57,9 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 			g := src.Pix[i+1]
 			b := src.Pix[i+2]
 
-			rLin := srgbToLinear(r)
-			gLin := srgbToLinear(g)
-			bLin := srgbToLinear(b)
+			rLin := srgb8ToLinearLUT(r)
+			gLin := srgb8ToLinearLUT(g)
+			bLin := srgb8ToLinearLUT(b)
 			X, Y, Z := linearToXyz(rLin, gLin, bLin)
 			L, aCh, bCh := xyzToLab(X, Y, Z)
 
@@ -69,12 +71,12 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 			// Convert back to linear RGB
 			x2, y2, z2 := labToXYZ(L2, a2, b2)
 			r2Lin, g2Lin, b2Lin := xyzToLinearRGB(x2, y2, z2)
-			// Gamma-encode back to sRGB 0..1
-			rOut := linearToSrgb8(r2Lin)
-			gOut := linearToSrgb8(g2Lin)
-			bOut := linearToSrgb8(b2Lin)
+			// Gamma-encode back to sRGB 0..1 using LUT-accelerated approx
+			rOut := linearToSrgbApprox(r2Lin)
+			gOut := linearToSrgbApprox(g2Lin)
+			bOut := linearToSrgbApprox(b2Lin)
 
-			// clamp and write (linearToSrgb8 returns 0..1)
+			// clamp and write (linearToSrgbApprox returns 0..1)
 			out.Pix[i+0] = uint8(clampFloatToUint8(rOut * 255.0))
 			out.Pix[i+1] = uint8(clampFloatToUint8(gOut * 255.0))
 			out.Pix[i+2] = uint8(clampFloatToUint8(bOut * 255.0))
@@ -84,12 +86,56 @@ func SepiaTone(src *image.NRGBA, percentage float64) *image.NRGBA {
 	return out
 }
 
-// linearToSrgb8 converts linear 0..1 to sRGB 0..1 (not scaled to 0..255)
-func linearToSrgb8(v float64) float64 {
-	if v <= 0.0031308 {
-		return 12.92 * v
+var (
+	sepiaLUTOnce    sync.Once
+	srgbToLinearLUT [256]float64
+	linearToSrgbLUT [256]float64 // stores sRGB(0..1) values for corresponding linear samples
+)
+
+// initSepiaLUTs initializes LUTs once.
+func initSepiaLUTs() {
+	sepiaLUTOnce.Do(func() {
+		for i := 0; i < 256; i++ {
+			v := float64(i) / 255.0
+			// srgb->linear
+			if v <= 0.04045 {
+				srgbToLinearLUT[i] = v / 12.92
+			} else {
+				srgbToLinearLUT[i] = math.Pow((v+0.055)/1.055, 2.4)
+			}
+			// linear->srgb for a uniform linear sample value
+			lv := float64(i) / 255.0
+			if lv <= 0.0031308 {
+				linearToSrgbLUT[i] = 12.92 * lv
+			} else {
+				linearToSrgbLUT[i] = 1.055*math.Pow(lv, 1.0/2.4) - 0.055
+			}
+		}
+	})
+}
+
+func srgb8ToLinearLUT(c uint8) float64 { return srgbToLinearLUT[int(c)] }
+
+// linearToSrgbApprox approximates linear->sRGB using LUT with interpolation
+func linearToSrgbApprox(v float64) float64 {
+	if v <= 0 {
+		return 0
 	}
-	return 1.055*math.Pow(v, 1.0/2.4) - 0.055
+	if v >= 1 {
+		return 1
+	}
+	f := v * 255.0
+	i := int(math.Floor(f))
+	if i < 0 {
+		i = 0
+	}
+	if i >= 255 {
+		return linearToSrgbLUT[255]
+	}
+	r := linearToSrgbLUT[i]
+	rn := linearToSrgbLUT[i+1]
+	frac := f - float64(i)
+	return r*(1-frac) + rn*frac
 }
 
 // labToXYZ converts Lab to XYZ

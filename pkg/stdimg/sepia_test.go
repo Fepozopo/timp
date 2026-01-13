@@ -33,6 +33,13 @@ func TestSepiaToneFull(t *testing.T) {
 	i := out.PixOffset(0, 0)
 	outCol := color.NRGBA{out.Pix[i+0], out.Pix[i+1], out.Pix[i+2], out.Pix[i+3]}
 
+	Lout, aout, bout := rgbToLab(outCol)
+	Ltar, atar, btar := rgbToLab(tNRGBA)
+	// log sRGB bytes too
+	t.Logf("out sRGB: %d %d %d", out.Pix[i+0], out.Pix[i+1], out.Pix[i+2])
+	t.Logf("out Lab: %v %v %v", Lout, aout, bout)
+	t.Logf("tar Lab: %v %v %v", Ltar, atar, btar)
+
 	d := labDistanceSq(outCol, tNRGBA)
 	if d > 4.0 {
 		t.Fatalf("output not close to target sepia in Lab (sqdist=%v)", d)
