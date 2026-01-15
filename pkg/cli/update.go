@@ -19,17 +19,17 @@ import (
 	"github.com/Fepozopo/timp/pkg/semver"
 )
 
-// Release is a minimal release descriptor used by detectLatestFallback.
+// Release is a minimal release descriptor used by detectLatestRelease.
 type Release struct {
 	Version  semver.Version
 	AssetURL string
 }
 
-// detectLatestFallback queries the GitHub Releases API and returns a best-match
-// release struct compatible with selfupdate.Release. It prefers published,
-// non-prerelease releases with semver-compliant tag names and returns the highest
-// semver it can find. If no suitable release is found it returns (nil, false, nil).
-func detectLatestFallback(repo string) (*Release, bool, error) {
+// detectLatestRelease queries the GitHub Releases API and returns the best-match
+// release. It prefers published, non-prerelease releases with semver-compliant
+// tag names and returns the highest semver it can find. If no suitable release
+// is found it returns (nil, false, nil).
+func detectLatestRelease(repo string) (*Release, bool, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases", repo)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
@@ -137,8 +137,8 @@ func detectLatestFallback(repo string) (*Release, bool, error) {
 func CheckForUpdates() error {
 	const repo = "Fepozopo/timp"
 
-	// Use the GitHub API fallback detector which is tolerant of tag naming.
-	latest, found, err := detectLatestFallback(repo)
+	// Use the GitHub API detector which is tolerant of tag naming.
+	latest, found, err := detectLatestRelease(repo)
 	fmt.Printf("Current version: %s\n", Version)
 	if err != nil {
 		return fmt.Errorf("update check failed: %w", err)
