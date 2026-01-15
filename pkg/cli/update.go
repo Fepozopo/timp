@@ -2,26 +2,34 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/blang/semver"
-	"github.com/rhysd/go-github-selfupdate/selfupdate"
+	"github.com/Fepozopo/timp/pkg/semver"
 )
 
-// detectLatestFallback queries the GitHub Releases API and returns a best-match
-// release struct compatible with selfupdate.Release. It prefers published,
-// non-prerelease releases with semver-compliant tag names and returns the highest
-// semver it can find. If no suitable release is found it returns (nil, false, nil).
-func detectLatestFallback(repo string) (*selfupdate.Release, bool, error) {
+// Release is a minimal release descriptor used by detectLatestRelease.
+type Release struct {
+	Version  semver.Version
+	AssetURL string
+}
+
+// detectLatestRelease queries the GitHub Releases API and returns the best-match
+// release. It prefers published, non-prerelease releases with semver-compliant
+// tag names and returns the highest semver it can find. If no suitable release
+// is found it returns (nil, false, nil).
+func detectLatestRelease(repo string) (*Release, bool, error) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases", repo)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(apiURL)
@@ -119,7 +127,7 @@ func detectLatestFallback(repo string) (*selfupdate.Release, bool, error) {
 	best := candidates[0]
 
 	// Build a selfupdate.Release-like struct (only include fields present in the actual type)
-	r := &selfupdate.Release{
+	r := &Release{
 		Version:  best.ver,
 		AssetURL: best.assetURL,
 	}
@@ -129,8 +137,8 @@ func detectLatestFallback(repo string) (*selfupdate.Release, bool, error) {
 func CheckForUpdates() error {
 	const repo = "Fepozopo/timp"
 
-	// Use the GitHub API fallback detector which is tolerant of tag naming.
-	latest, found, err := detectLatestFallback(repo)
+	// Use the GitHub API detector which is tolerant of tag naming.
+	latest, found, err := detectLatestRelease(repo)
 	fmt.Printf("Current version: %s\n", Version)
 	if err != nil {
 		return fmt.Errorf("update check failed: %w", err)
@@ -185,7 +193,8 @@ func CheckForUpdates() error {
 		return fmt.Errorf("could not locate executable: %w", err)
 	}
 
-	if err := selfupdate.UpdateTo(latest.AssetURL, exe); err != nil {
+	// Download to temp and atomically replace the executable.
+	if err := downloadAndAtomicReplace(latest.AssetURL, exe); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
 
@@ -208,5 +217,99 @@ func CheckForUpdates() error {
 	}
 
 	// If Exec succeeds, this process is replaced and the following lines won't run.
+	return nil
+}
+
+// downloadAndAtomicReplace downloads the assetURL to a temp file in the same directory
+// as destPath and then atomically renames it over destPath. It preserves file mode when
+// possible and falls back to file copy on cross-device rename failures.
+func downloadAndAtomicReplace(assetURL, destPath string) error {
+	resp, err := http.Get(assetURL)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("download returned status %d: %s", resp.StatusCode, string(b))
+	}
+
+	dir := filepath.Dir(destPath)
+	tmpFile, err := os.CreateTemp(dir, ".timp-upd-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmpFile.Name()
+	// ensure cleanup on failure
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
+	}()
+
+	// Stream download into temp file
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("sync temp: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+
+	// Preserve mode if destination exists; otherwise ensure executable bit for user
+	if fi, err := os.Stat(destPath); err == nil {
+		_ = os.Chmod(tmpName, fi.Mode())
+	} else {
+		_ = os.Chmod(tmpName, 0755)
+	}
+
+	// Attempt atomic rename
+	if err := os.Rename(tmpName, destPath); err != nil {
+		// cross-device fallback
+		if errors.Is(err, syscall.EXDEV) {
+			if cerr := copyFile(tmpName, destPath); cerr != nil {
+				return fmt.Errorf("copy fallback failed: %w (rename err: %v)", cerr, err)
+			}
+			_ = os.Remove(tmpName)
+		} else if runtime.GOOS == "windows" {
+			// Best-effort: remove dest then rename (not perfectly atomic on Windows)
+			_ = os.Remove(destPath)
+			if rerr := os.Rename(tmpName, destPath); rerr != nil {
+				return fmt.Errorf("rename after remove failed: %w", rerr)
+			}
+		} else {
+			return fmt.Errorf("rename failed: %w", err)
+		}
+	}
+
+	// fsync containing directory (best-effort)
+	if dirf, err := os.Open(dir); err == nil {
+		_ = dirf.Sync()
+		_ = dirf.Close()
+	}
+
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	sf, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+	fi, _ := os.Stat(src)
+	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, fi.Mode())
+	if err != nil {
+		return err
+	}
+	defer df.Close()
+	if _, err := io.Copy(df, sf); err != nil {
+		return err
+	}
+	if err := df.Sync(); err != nil {
+		return err
+	}
 	return nil
 }
