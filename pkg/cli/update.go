@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/blang/semver"
+	"github.com/Fepozopo/timp/pkg/semver"
 )
 
 // Release is a minimal release descriptor used by detectLatestFallback.
