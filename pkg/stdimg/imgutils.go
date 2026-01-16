@@ -62,3 +62,17 @@ func samplePixelClamped(img *image.NRGBA, x, y int) color.NRGBA {
 	i := img.PixOffset(x, y)
 	return color.NRGBA{img.Pix[i+0], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3]}
 }
+
+func makeSolidNRGBA(w, h int, c color.NRGBA) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			i := img.PixOffset(x, y)
+			img.Pix[i+0] = c.R
+			img.Pix[i+1] = c.G
+			img.Pix[i+2] = c.B
+			img.Pix[i+3] = c.A
+		}
+	}
+	return img
+}
