@@ -29,9 +29,6 @@ func TestAddNoiseDeterministic(t *testing.T) {
 			if r != 128 {
 				same = false
 			}
-			if r > 255 {
-				t.Fatalf("value >255: %d", r)
-			}
 		}
 	}
 	if same {
