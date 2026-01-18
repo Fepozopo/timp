@@ -35,7 +35,7 @@ func RunCLI() {
 	var cur image.Image
 	// Track the path of the currently loaded image so we can show EXIF for identify
 	var currentImagePath string
-	var currentMeta []byte
+	var currentAppSegments []AppSegment
 	var currentAutoOriented bool
 	if inputImagePath != "" {
 		img, _, meta, autoOriented, err := LoadImage(inputImagePath)
@@ -45,7 +45,7 @@ func RunCLI() {
 		}
 		cur = img
 		currentImagePath = inputImagePath
-		currentMeta = meta
+		currentAppSegments = meta
 		currentAutoOriented = autoOriented
 		// Try to show an initial preview in compatible terminals.
 		// Ignore errors here so preview remains optional.
@@ -189,7 +189,7 @@ func RunCLI() {
 			_ = PreviewImage(cur)
 			if commandName == "strip" {
 				// clear stored metadata on strip
-				currentMeta = nil
+				currentAppSegments = nil
 				currentAutoOriented = false
 				fmt.Println("metadata cleared")
 			}
@@ -291,7 +291,7 @@ func RunCLI() {
 				fmt.Println("no filename provided")
 				continue
 			}
-			if err := SaveImage(out, cur, currentMeta, currentAutoOriented); err != nil {
+			if err := SaveImage(out, cur, currentAppSegments, currentAutoOriented); err != nil {
 				fmt.Fprintf(os.Stderr, "failed to write image: %v\n", err)
 				continue
 			}
@@ -317,7 +317,7 @@ func RunCLI() {
 			}
 			cur = img
 			currentImagePath = newPath
-			currentMeta = meta
+			currentAppSegments = meta
 			currentAutoOriented = autoOriented
 			fmt.Printf("Opened %s\n", newPath)
 			_ = PreviewImage(cur)
