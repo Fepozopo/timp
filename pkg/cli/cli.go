@@ -35,14 +35,18 @@ func RunCLI() {
 	var cur image.Image
 	// Track the path of the currently loaded image so we can show EXIF for identify
 	var currentImagePath string
+	var currentMeta []byte
+	var currentAutoOriented bool
 	if inputImagePath != "" {
-		img, _, err := LoadImage(inputImagePath)
+		img, _, meta, autoOriented, err := LoadImage(inputImagePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to read image %s: %v\n", inputImagePath, err)
 			os.Exit(1)
 		}
 		cur = img
 		currentImagePath = inputImagePath
+		currentMeta = meta
+		currentAutoOriented = autoOriented
 		// Try to show an initial preview in compatible terminals.
 		// Ignore errors here so preview remains optional.
 		_ = PreviewImage(cur)
@@ -183,6 +187,12 @@ func RunCLI() {
 			}
 			fmt.Printf("Applied %s\n", commandName)
 			_ = PreviewImage(cur)
+			if commandName == "strip" {
+				// clear stored metadata on strip
+				currentMeta = nil
+				currentAutoOriented = false
+				fmt.Println("metadata cleared")
+			}
 			if commandName == "identify" {
 				if currentImagePath != "" {
 					if ex, err := ExtractEXIFStruct(currentImagePath); err == nil {
@@ -281,7 +291,7 @@ func RunCLI() {
 				fmt.Println("no filename provided")
 				continue
 			}
-			if err := SaveImage(out, cur); err != nil {
+			if err := SaveImage(out, cur, currentMeta, currentAutoOriented); err != nil {
 				fmt.Fprintf(os.Stderr, "failed to write image: %v\n", err)
 				continue
 			}
@@ -300,13 +310,15 @@ func RunCLI() {
 				newPath = selected
 			}
 
-			img, _, err := LoadImage(newPath)
+			img, _, meta, autoOriented, err := LoadImage(newPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to read image %s: %v\n", newPath, err)
 				continue
 			}
 			cur = img
 			currentImagePath = newPath
+			currentMeta = meta
+			currentAutoOriented = autoOriented
 			fmt.Printf("Opened %s\n", newPath)
 			_ = PreviewImage(cur)
 			if info, ierr := GetImageInfoImage(cur); ierr == nil {

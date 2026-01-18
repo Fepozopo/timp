@@ -213,7 +213,7 @@ var Commands = []CommandSpec{
 		Name:        "identify",
 		Args:        []ArgSpec{},
 		Usage:       "identify",
-		Description: "Print width, height and color model; returns nil image.",
+		Description: "Print image metadata; returns nil image.",
 	},
 	{
 		Name:        "strip",
