@@ -6,7 +6,7 @@ import (
 )
 
 // Edge applies a simple Sobel edge detector and returns a grayscale image representing edge magnitude.
-// This improved version supports optional pre-blur (sigma), scale multiplier, thresholding, and binary output.
+// This supports optional pre-blur (sigma), scale multiplier, thresholding, and binary output.
 func EdgeEx(src *image.NRGBA, sigma, scale, threshold float64, binary bool) *image.NRGBA {
 	if src == nil {
 		return nil
