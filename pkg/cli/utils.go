@@ -96,12 +96,22 @@ func PromptLineWithFzf(prompt string) (string, error) {
 	return PromptLineOrFzf(prompt)
 }
 
-// LoadImage loads a file from disk into an image.Image. Supports PNG/JPEG/GIF based on file extension and decoders.
-func LoadImage(path string) (image.Image, string, error) {
+// AppSegment represents a JPEG APPn segment (marker 0xFFE0..0xFFEF) payload.
+// Payload does not include the marker/length bytes; Marker stores the low byte (e.g. 0xE1).
+type AppSegment struct {
+	Marker  byte
+	Payload []byte
+}
+
+// LoadImage loads a file from disk into an image.Image and returns the image,
+// detected format, extracted JPEG APPn segments (in original order), a flag
+// indicating whether AutoOrient was applied, and an error.
+// Supports PNG/JPEG/GIF based on file signature.
+func LoadImage(path string) (image.Image, string, []AppSegment, bool, error) {
 	// Read full file to allow EXIF inspection for JPEG orientation.
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, false, err
 	}
 	// quick format detection via magic
 	format := ""
@@ -114,30 +124,182 @@ func LoadImage(path string) (image.Image, string, error) {
 	}
 	// If JPEG, try to extract EXIF orientation
 	orientation := 1
+	autoOriented := false
+	var appSegments []AppSegment
 	if format == "jpeg" {
 		if o, err := extractJPEGOrientation(b); err == nil && o >= 1 && o <= 8 {
 			orientation = o
 		}
+		// parse all APPn segments
+		if segs, err := parseJPEGAppSegments(b); err == nil && len(segs) > 0 {
+			appSegments = segs
+		}
 	}
 	img, _, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, false, err
 	}
 	// apply auto-orient if needed
 	if orientation != 1 {
 		img = stdimg.AutoOrient(img, orientation)
+		autoOriented = true
 	}
 	if format == "" {
 		// fallback to decoded format if we couldn't heuristically detect
-		// the file signature
-		// attempt to determine from decode
-		// (image.Decode returned an image but not format; we already called Decode so "_" ignored)
 		format = ""
 	}
-	return img, format, nil
+	return img, format, appSegments, autoOriented, nil
 }
 
-// parseEXIFFromJPEG scans JPEG segments to find an APP1 Exif block and returns
+// extractAPP1PayloadFromJPEG finds the first APP1 segment whose payload begins
+// with "Exif\x00\x00" and returns the payload (starting at the "Exif\x00\x00").
+// If not found, returns nil, nil.
+// parseJPEGAppSegments scans JPEG bytes and returns a slice of AppSegment in the
+// original order. It collects APPn segments (markers 0xFFE0..0xFFEF) and stores
+// the marker low byte (e.g., 0xE1) and the payload (bytes after the 2-byte length).
+func parseJPEGAppSegments(data []byte) ([]AppSegment, error) {
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return nil, fmt.Errorf("not a jpeg")
+	}
+	segs := []AppSegment{}
+	i := 2
+	for i+4 <= len(data) {
+		if data[i] != 0xFF {
+			i++
+			continue
+		}
+		marker := data[i+1]
+		if marker == 0xDA { // start of scan
+			break
+		}
+		if i+4 > len(data) {
+			break
+		}
+		segLen := int(data[i+2])<<8 | int(data[i+3])
+		if marker >= 0xE0 && marker <= 0xEF {
+			payloadLen := segLen - 2
+			if payloadLen < 0 || i+4+payloadLen > len(data) {
+				return nil, fmt.Errorf("malformed segment")
+			}
+			payload := append([]byte(nil), data[i+4:i+4+payloadLen]...)
+			segs = append(segs, AppSegment{Marker: marker, Payload: payload})
+		}
+		if segLen <= 2 {
+			i += 2
+		} else {
+			i += 2 + segLen
+		}
+	}
+	return segs, nil
+}
+
+func extractAPP1PayloadFromJPEG(data []byte) ([]byte, error) {
+	// Minimal JPEG segment scan (start at offset 2 after SOI)
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return nil, fmt.Errorf("not a jpeg")
+	}
+	i := 2
+	for i+4 <= len(data) {
+		if data[i] != 0xFF {
+			i++
+			continue
+		}
+		marker := data[i+1]
+		if marker == 0xDA { // start of scan
+			break
+		}
+		if i+4 > len(data) {
+			break
+		}
+		segLen := int(data[i+2])<<8 | int(data[i+3])
+		if marker == 0xE1 && segLen >= 8 {
+			// check for "Exif\0\0"
+			if i+4+6 <= len(data) && string(data[i+4:i+10]) == "Exif\x00\x00" {
+				// payload starts at i+4 and is segLen-2 bytes long (length includes the two length bytes)
+				payloadLen := segLen - 2
+				if i+4+payloadLen <= len(data) {
+					return append([]byte(nil), data[i+4:i+4+payloadLen]...), nil
+				}
+			}
+		}
+		if segLen <= 2 {
+			i += 2
+		} else {
+			i += 2 + segLen
+		}
+	}
+	return nil, nil
+}
+
+// setEXIFOrientationToOne takes an APP1 payload (starting with "Exif\x00\x00") and
+// sets the Orientation tag (0x0112) in IFD0 to value 1 if present. It returns
+// a new modified payload or an error.
+func setEXIFOrientationToOne(app1 []byte) ([]byte, error) {
+	if len(app1) < 8 {
+		return app1, fmt.Errorf("app1 too short")
+	}
+	if string(app1[:6]) != "Exif\x00\x00" {
+		return app1, fmt.Errorf("not exif payload")
+	}
+	// TIFF header starts at offset 6
+	tiffStart := 6
+	if tiffStart+8 > len(app1) {
+		return app1, fmt.Errorf("tiff header truncated")
+	}
+	var order binary.ByteOrder
+	if app1[tiffStart] == 'M' && app1[tiffStart+1] == 'M' {
+		order = binary.BigEndian
+	} else if app1[tiffStart] == 'I' && app1[tiffStart+1] == 'I' {
+		order = binary.LittleEndian
+	} else {
+		return app1, fmt.Errorf("unknown tiff byte order")
+	}
+	magic := order.Uint16(app1[tiffStart+2 : tiffStart+4])
+	if magic != 0x002A {
+		return app1, fmt.Errorf("invalid tiff magic")
+	}
+	off := int(order.Uint32(app1[tiffStart+4 : tiffStart+8]))
+	if off <= 0 || tiffStart+off >= len(app1) {
+		return app1, fmt.Errorf("invalid ifd offset")
+	}
+	absIfd := tiffStart + off
+	if absIfd+2 > len(app1) {
+		return app1, fmt.Errorf("ifd truncated")
+	}
+	nEntries := int(order.Uint16(app1[absIfd : absIfd+2]))
+	entriesBase := absIfd + 2
+	for e := 0; e < nEntries; e++ {
+		ent := entriesBase + e*12
+		if ent+12 > len(app1) {
+			break
+		}
+		tag := order.Uint16(app1[ent : ent+2])
+		// Orientation tag
+		if tag == 0x0112 {
+			// value is stored in the 4-byte value field for SHORT when count==1
+			// We will write the appropriate 2-byte value into the first two bytes of that field
+			// preserve endianness
+			if order == binary.BigEndian {
+				// value at app1[ent+8:ent+12], big-endian
+				app1[ent+8] = 0x00
+				app1[ent+9] = 0x01
+				app1[ent+10] = 0x00
+				app1[ent+11] = 0x00
+			} else {
+				// little endian
+				app1[ent+8] = 0x01
+				app1[ent+9] = 0x00
+				app1[ent+10] = 0x00
+				app1[ent+11] = 0x00
+			}
+			return append([]byte(nil), app1...), nil
+		}
+	}
+	// orientation tag not found; nothing to do
+	return app1, nil
+}
+
+// parseTIFFStartFromJPEG scans JPEG segments to find an APP1 Exif block and returns
 // the TIFF start offset (index in data) where the TIFF header begins, or -1 if not found.
 func parseTIFFStartFromJPEG(data []byte) (int, error) {
 	if len(data) < 4 {
@@ -447,9 +609,42 @@ func extractJPEGOrientation(data []byte) (int, error) {
 	return 0, fmt.Errorf("orientation tag not found")
 }
 
+// insertAppSegmentsIntoJPEG inserts APPn segments after the SOI in jpegBytes.
+// It returns new JPEG bytes or an error. It verifies each segment payload fits
+// within a single segment (payloadLen+2 <= 0xFFFF). The segments are inserted
+// in the provided order.
+func insertAppSegmentsIntoJPEG(jpegBytes []byte, segments []AppSegment) ([]byte, error) {
+	if len(jpegBytes) < 2 || jpegBytes[0] != 0xFF || jpegBytes[1] != 0xD8 {
+		return nil, fmt.Errorf("not a jpeg")
+	}
+	// build insertion buffer
+	ins := &bytes.Buffer{}
+	for _, s := range segments {
+		payloadLen := len(s.Payload)
+		if payloadLen+2 > 0xFFFF {
+			return nil, fmt.Errorf("app segment (0xFF%02X) payload too large: %d bytes", s.Marker, payloadLen)
+		}
+		// marker
+		ins.WriteByte(0xFF)
+		ins.WriteByte(s.Marker)
+		// length (payload + 2)
+		ln := uint16(payloadLen + 2)
+		ins.WriteByte(byte(ln >> 8))
+		ins.WriteByte(byte(ln & 0xFF))
+		ins.Write(s.Payload)
+	}
+	out := make([]byte, 0, 2+ins.Len()+len(jpegBytes)-2)
+	out = append(out, jpegBytes[:2]...)
+	out = append(out, ins.Bytes()...)
+	out = append(out, jpegBytes[2:]...)
+	return out, nil
+}
+
 // SaveImage saves an image.Image to disk using format inferred from the filename extension.
-// Supports .png, .jpg/.jpeg, .gif
-func SaveImage(path string, img image.Image) error {
+// Supports .png, .jpg/.jpeg, .gif. If appSegments are provided and the destination is JPEG,
+// the APPn segments will be re-inserted after SOI in original order. If autoOriented is true,
+// the EXIF Orientation tag (if present in APP1) will be set to 1 before insertion.
+func SaveImage(path string, img image.Image, appSegments []AppSegment, autoOriented bool) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
@@ -460,6 +655,40 @@ func SaveImage(path string, img image.Image) error {
 	case ".png":
 		return png.Encode(f, img)
 	case ".jpg", ".jpeg":
+		// If we have APPn segments, reinsert them after SOI in original order.
+		if len(appSegments) > 0 {
+			// If auto-oriented, adjust the EXIF APP1 payload(s) to set Orientation=1.
+			if autoOriented {
+				for i, s := range appSegments {
+					if s.Marker == 0xE1 && len(s.Payload) >= 6 && string(s.Payload[:6]) == "Exif\x00\x00" {
+						if mod, merr := setEXIFOrientationToOne(s.Payload); merr == nil {
+							appSegments[i].Payload = mod
+						}
+					}
+				}
+			}
+			// encode image to JPEG bytes
+			buf := &bytes.Buffer{}
+			if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 92}); err != nil {
+				return err
+			}
+			jpegBytes := buf.Bytes()
+			// ensure jpegBytes starts with SOI
+			if len(jpegBytes) < 2 || jpegBytes[0] != 0xFF || jpegBytes[1] != 0xD8 {
+				return fmt.Errorf("encoder produced non-jpeg output")
+			}
+			// insert APPn segments after SOI
+			final, ierr := insertAppSegmentsIntoJPEG(jpegBytes, appSegments)
+			if ierr != nil {
+				return ierr
+			}
+			// write final bytes
+			if _, err := f.Write(final); err != nil {
+				return err
+			}
+			return nil
+		}
+		// no app segments: fallback to normal encode
 		return jpeg.Encode(f, img, &jpeg.Options{Quality: 92})
 	case ".gif":
 		return gif.Encode(f, img, nil)
@@ -491,5 +720,3 @@ func GetImageInfoImage(img image.Image) (string, error) {
 	}
 	return fmt.Sprintf("Format: %s, Width: %d, Height: %d", format, b.Dx(), b.Dy()), nil
 }
-
-// PreviewImage wrapper will be provided in terminal_preview.go which knows how to send PNG bytes to the terminal.

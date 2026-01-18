@@ -802,7 +802,7 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 		return nil, nil
 
 	case "strip":
-		// No-op for stdlib: re-encoding will drop metadata at save time
+		// No-op for stdlib: re-encoding will drop metadata at save time if this isn't run
 		return src, nil
 
 	default:

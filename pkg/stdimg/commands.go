@@ -213,13 +213,13 @@ var Commands = []CommandSpec{
 		Name:        "identify",
 		Args:        []ArgSpec{},
 		Usage:       "identify",
-		Description: "Print width, height and color model; returns nil image.",
+		Description: "Print image metadata; returns nil image.",
 	},
 	{
 		Name:        "strip",
 		Args:        []ArgSpec{},
 		Usage:       "strip",
-		Description: "No-op in memory; metadata handled at encode time.",
+		Description: "Strip metadata; returns image unchanged.",
 	},
 	{
 		Name:        "sepia",
