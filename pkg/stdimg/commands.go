@@ -219,7 +219,7 @@ var Commands = []CommandSpec{
 		Name:        "strip",
 		Args:        []ArgSpec{},
 		Usage:       "strip",
-		Description: "No-op in memory; metadata handled at encode time.",
+		Description: "Strip metadata; returns image unchanged.",
 	},
 	{
 		Name:        "sepia",
