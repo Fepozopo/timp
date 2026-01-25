@@ -184,6 +184,19 @@ func PreviewImage(img image.Image, format string) error {
 	}
 	var buf bytes.Buffer
 	f := strings.ToLower(format)
+	// Determine backend override and only force PNG for kitty when appropriate.
+	backend := strings.ToLower(os.Getenv("PREVIEW_BACKEND"))
+	if backend == "" {
+		if isKitty() {
+			debugf("forcing png encoding for kitty backend (detected)")
+			f = "png"
+		}
+	} else if backend == "kitty" {
+		debugf("forcing png encoding for PREVIEW_BACKEND=kitty")
+		f = "png"
+	} else {
+		debugf("PREVIEW_BACKEND=%s -> not forcing png", backend)
+	}
 	if f == "jpeg" || f == "jpg" {
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 92}); err != nil {
 			return fmt.Errorf("jpeg encode failed: %w", err)
@@ -266,7 +279,8 @@ func previewBytes(blob []byte, format string) error {
 
 	if isKitty() {
 		debugf("attempting kitty protocol")
-		if err := sendKittyImage(blob, format); err != nil {
+		// When sending to kitty, ensure the payload is PNG (kitty prefers PNG).
+		if err := sendKittyImage(blob, "png"); err != nil {
 			debugf("kitty protocol failed: %v", err)
 			if isSixelCapable() {
 				if err3 := sendSixelImage(blob, format); err3 == nil {
