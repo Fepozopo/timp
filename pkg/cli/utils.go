@@ -135,7 +135,7 @@ func LoadImage(path string) (image.Image, string, []AppSegment, bool, error) {
 			appSegments = segs
 		}
 	}
-	img, _, err := image.Decode(bytes.NewReader(b))
+	img, decFormat, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
 		return nil, "", nil, false, err
 	}
@@ -146,7 +146,7 @@ func LoadImage(path string) (image.Image, string, []AppSegment, bool, error) {
 	}
 	if format == "" {
 		// fallback to decoded format if we couldn't heuristically detect
-		format = ""
+		format = strings.ToLower(decFormat)
 	}
 	return img, format, appSegments, autoOriented, nil
 }

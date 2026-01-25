@@ -35,21 +35,23 @@ func RunCLI() {
 	var cur image.Image
 	// Track the path of the currently loaded image so we can show EXIF for identify
 	var currentImagePath string
+	var currentFormat string
 	var currentAppSegments []AppSegment
 	var currentAutoOriented bool
 	if inputImagePath != "" {
-		img, _, meta, autoOriented, err := LoadImage(inputImagePath)
+		img, format, meta, autoOriented, err := LoadImage(inputImagePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to read image %s: %v\n", inputImagePath, err)
 			os.Exit(1)
 		}
 		cur = img
 		currentImagePath = inputImagePath
+		currentFormat = format
 		currentAppSegments = meta
 		currentAutoOriented = autoOriented
 		// Try to show an initial preview in compatible terminals.
 		// Ignore errors here so preview remains optional.
-		_ = PreviewImage(cur)
+		_ = PreviewImage(cur, currentFormat)
 		if info, ierr := GetImageInfoImage(cur); ierr == nil {
 			fmt.Println(info)
 		}
@@ -186,7 +188,7 @@ func RunCLI() {
 				cur = newImg
 			}
 			fmt.Printf("Applied %s\n", commandName)
-			_ = PreviewImage(cur)
+			_ = PreviewImage(cur, currentFormat)
 			if commandName == "strip" {
 				// clear stored metadata on strip
 				currentAppSegments = nil
@@ -310,17 +312,18 @@ func RunCLI() {
 				newPath = selected
 			}
 
-			img, _, meta, autoOriented, err := LoadImage(newPath)
+			img, format, meta, autoOriented, err := LoadImage(newPath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "failed to read image %s: %v\n", newPath, err)
 				continue
 			}
 			cur = img
 			currentImagePath = newPath
+			currentFormat = format
 			currentAppSegments = meta
 			currentAutoOriented = autoOriented
 			fmt.Printf("Opened %s\n", newPath)
-			_ = PreviewImage(cur)
+			_ = PreviewImage(cur, currentFormat)
 			if info, ierr := GetImageInfoImage(cur); ierr == nil {
 				fmt.Println(info)
 			}
