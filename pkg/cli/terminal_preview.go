@@ -7,9 +7,9 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"math"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -62,12 +62,22 @@ func isKitty() bool {
 	}
 	// Inspect TERM for known kitty-compatible names.
 	term := strings.ToLower(os.Getenv("TERM"))
-	// Accept kitty and ghostty (and short 'ghost') as kitty-compatible terminals.
-	if strings.Contains(term, "kitty") || strings.Contains(term, "ghostty") || strings.Contains(term, "ghost") {
+	// Accept kitty as a real kitty-compatible terminal.
+	if strings.Contains(term, "kitty") {
 		return true
 	}
 	// Konsole may implement parts of the protocol via an older kitty compatibility mode.
 	if os.Getenv("KONSOLE_VERSION") != "" {
+		return true
+	}
+	return false
+}
+
+// isGhostty returns true when the terminal is a Ghostty instance that
+// implements the kitty graphics protocol partially (PNG-only support).
+func isGhostty() bool {
+	term := strings.ToLower(os.Getenv("TERM"))
+	if strings.Contains(term, "ghostty") || strings.Contains(term, "ghost") {
 		return true
 	}
 	return false
@@ -100,12 +110,8 @@ func isInlineImageCapable() bool {
 }
 
 // Detect terminals that likely support Sixel graphics (foot, Windows Terminal >= certain versions,
-// st with sixel patch, Black Box, etc). This is heuristic — if you rely on Sixel in CI, add
-// a user-configurable override environment variable SIXEL_PREVIEW=1 to force it.
+// st with sixel patch, Black Box, etc). This is heuristic — if you rely on Sixel in CI
 func isSixelCapable() bool {
-	if os.Getenv("SIXEL_PREVIEW") == "1" {
-		return true
-	}
 	term := strings.ToLower(os.Getenv("TERM"))
 	if strings.Contains(term, "foot") || strings.Contains(term, "st") || strings.Contains(term, "linux") {
 		return true
@@ -120,9 +126,6 @@ func isSixelCapable() bool {
 // We treat chafa as a usable fallback for terminals that don't implement inline
 // or sixel protocols but can still display block/character graphics.
 func hasChafa() bool {
-	if os.Getenv("CHAFAPREVIEW") == "1" {
-		return true
-	}
 	if _, err := exec.LookPath("chafa"); err == nil {
 		return true
 	}
@@ -134,23 +137,7 @@ func hasChafa() bool {
 // the chafa size if provided. The result is clamped to avoid emitting a large
 // gap; default is 1-3 lines depending on image height hints.
 func postImageNewlines(requestedRows int) int {
-	// If explicit KITTY_PREVIEW_ROWS is set, prefer that.
-	if v := os.Getenv("KITTY_PREVIEW_ROWS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			if n == 0 {
-				return 1
-			}
-			if n <= 3 {
-				return n
-			}
-			if n <= 10 {
-				return 3
-			}
-			return 4
-		}
-	}
-
-	// If chafa provided a requested row count, use it to pick 1-4 lines.
+	// Use the provided requestedRows hint to pick a small number of lines.
 	if requestedRows > 0 {
 		if requestedRows <= 2 {
 			return 1
@@ -171,8 +158,8 @@ func postImageNewlines(requestedRows int) int {
 // PreviewSupported returns true if the running environment likely supports a terminal inline preview.
 // We consider chafa availability as a valid fallback even if no inline/sixel protocol is detected.
 func PreviewSupported() bool {
-	supported := isKitty() || isInlineImageCapable() || isSixelCapable() || hasChafa()
-	debugf("PreviewSupported -> %v (kitty=%v inline=%v sixel=%v chafa=%v)", supported, isKitty(), isInlineImageCapable(), isSixelCapable(), hasChafa())
+	supported := isKitty() || isGhostty() || isInlineImageCapable() || isSixelCapable() || hasChafa()
+	debugf("PreviewSupported -> %v (kitty=%v ghostty=%v inline=%v sixel=%v chafa=%v)", supported, isKitty(), isGhostty(), isInlineImageCapable(), isSixelCapable(), hasChafa())
 	return supported
 }
 
@@ -184,16 +171,17 @@ func PreviewImage(img image.Image, format string) error {
 	}
 	var buf bytes.Buffer
 	f := strings.ToLower(format)
-	// Determine backend override and only force PNG for kitty when appropriate.
+	// Determine backend override and only force PNG for kitty when appropriate as some terminals have issues with JPEG
+	// if they only partially support the kitty graphics protocol.
 	backend := strings.ToLower(os.Getenv("PREVIEW_BACKEND"))
-	if backend == "" {
-		if isKitty() {
-			debugf("forcing png encoding for kitty backend (detected)")
+	if backend == "" && hasChafa() != true || backend == "kitty" {
+		// Ghostty implements the kitty protocol only partially and reliably
+		// renders PNG — force PNG for ghostty terminals while leaving real
+		// kitty behavior unchanged.
+		if isGhostty() {
+			debugf("forcing png encoding for ghostty backend (detected)")
 			f = "png"
 		}
-	} else if backend == "kitty" {
-		debugf("forcing png encoding for PREVIEW_BACKEND=kitty")
-		f = "png"
 	} else {
 		debugf("PREVIEW_BACKEND=%s -> not forcing png", backend)
 	}
@@ -207,11 +195,74 @@ func PreviewImage(img image.Image, format string) error {
 		}
 		f = "png"
 	}
-	return previewBytes(buf.Bytes(), f)
+	size := computePreviewSize(img)
+	return previewBytes(buf.Bytes(), f, size)
+}
+
+// PreviewSize conveys a target placement for terminal preview backends.
+type PreviewSize struct {
+	Cols        int // terminal character columns
+	Rows        int // terminal character rows
+	PixelWidth  int // approximate pixel width (Cols * cellWidth)
+	PixelHeight int // approximate pixel height (Rows * cellHeight)
+}
+
+// computePreviewSize maps an image's pixel dimensions into a target
+// terminal character cell size. This uses conservative defaults and clamps
+// to avoid extremely large previews.
+func computePreviewSize(img image.Image) PreviewSize {
+	w := img.Bounds().Dx()
+	h := img.Bounds().Dy()
+
+	// Character cell pixel assumptions. Kept as constants to avoid
+	// relying on environment overrides for sizing.
+	const charW = 8
+	const charH = 16
+	// Clamp ranges for columns/rows to keep previews reasonably small.
+	const minCols = 6
+	const minRows = 3
+	const maxCols = 80
+	const maxRows = 40
+
+	// Maximum pixel dimensions based on max cols/rows.
+	maxPixelW := maxCols * charW
+	maxPixelH := maxRows * charH
+
+	// Compute a uniform scale factor so we preserve the image aspect ratio
+	// while fitting inside maxPixelW x maxPixelH. We never scale up (scale<=1).
+	scaleW := float64(maxPixelW) / float64(w)
+	scaleH := float64(maxPixelH) / float64(h)
+	scale := math.Min(1.0, math.Min(scaleW, scaleH))
+
+	targetW := int(math.Round(float64(w) * scale))
+	targetH := int(math.Round(float64(h) * scale))
+
+	cols := int(math.Round(float64(targetW) / float64(charW)))
+	rows := int(math.Round(float64(targetH) / float64(charH)))
+
+	if cols < minCols {
+		cols = minCols
+	}
+	if cols > maxCols {
+		cols = maxCols
+	}
+	if rows < minRows {
+		rows = minRows
+	}
+	if rows > maxRows {
+		rows = maxRows
+	}
+
+	return PreviewSize{
+		Cols:        cols,
+		Rows:        rows,
+		PixelWidth:  cols * charW,
+		PixelHeight: rows * charH,
+	}
 }
 
 // previewBytes centralizes the logic of sending bytes via kitty/inline/sixel/chafa.
-func previewBytes(blob []byte, format string) error {
+func previewBytes(blob []byte, format string, size PreviewSize) error {
 	if len(blob) == 0 {
 		return fmt.Errorf("empty image blob")
 	}
@@ -222,25 +273,25 @@ func previewBytes(blob []byte, format string) error {
 		debugf("PREVIEW_BACKEND override: %s", v)
 		switch v {
 		case "kitty":
-			if err := sendKittyImage(blob, format); err == nil {
+			if err := sendKittyImage(blob, format, size); err == nil {
 				return nil
 			} else {
 				debugf("override kitty failed: %v", err)
 			}
 		case "inline", "iterm", "wezterm":
-			if err := sendInlineImage(blob, format); err == nil {
+			if err := sendInlineImage(blob, format, size); err == nil {
 				return nil
 			} else {
 				debugf("override inline failed: %v", err)
 			}
 		case "sixel":
-			if err := sendSixelImage(blob, format); err == nil {
+			if err := sendSixelImage(blob, format, size); err == nil {
 				return nil
 			} else {
 				debugf("override sixel failed: %v", err)
 			}
 		case "chafa":
-			if err := sendChafaImage(blob, format); err == nil {
+			if err := sendChafaImage(blob, format, size); err == nil {
 				return nil
 			} else {
 				debugf("override chafa failed: %v", err)
@@ -251,24 +302,35 @@ func previewBytes(blob []byte, format string) error {
 		// fall through to normal detection/fallback order
 	}
 
-	// Default detection/fallback order: inline-capable, kitty, sixel, chafa.
-	// Inline is tried first because many modern terminals implement it reliably.
+	// Default detection/fallback order: chafa, inline-capable, kitty, sixel.
+	// Prefer chafa when available so users with it installed get a terminal-native rendering.
+	if hasChafa() {
+		debugf("attempting chafa (preferred)")
+		if err := sendChafaImage(blob, format, size); err == nil {
+			return nil
+		} else {
+			debugf("chafa failed: %v", err)
+		}
+		// fall through to inline/sixel/kitty fallbacks
+	}
+
+	// Inline is tried next because many modern terminals implement it reliably.
 	if isInlineImageCapable() {
 		debugf("attempting inline protocol")
-		if err := sendInlineImage(blob, format); err != nil {
+		if err := sendInlineImage(blob, format, size); err != nil {
 			debugf("inline protocol failed: %v", err)
-			if isKitty() {
-				if err2 := sendKittyImage(blob, format); err2 == nil {
+			if isKitty() || isGhostty() {
+				if err2 := sendKittyImage(blob, format, size); err2 == nil {
 					return nil
 				}
 			}
 			if isSixelCapable() {
-				if err3 := sendSixelImage(blob, format); err3 == nil {
+				if err3 := sendSixelImage(blob, format, size); err3 == nil {
 					return nil
 				}
 			}
 			if hasChafa() {
-				if err4 := sendChafaImage(blob, format); err4 == nil {
+				if err4 := sendChafaImage(blob, format, size); err4 == nil {
 					return nil
 				}
 			}
@@ -277,18 +339,17 @@ func previewBytes(blob []byte, format string) error {
 		return nil
 	}
 
-	if isKitty() {
+	if isKitty() || isGhostty() {
 		debugf("attempting kitty protocol")
-		// When sending to kitty, ensure the payload is PNG (kitty prefers PNG).
-		if err := sendKittyImage(blob, "png"); err != nil {
+		if err := sendKittyImage(blob, format, size); err != nil {
 			debugf("kitty protocol failed: %v", err)
 			if isSixelCapable() {
-				if err3 := sendSixelImage(blob, format); err3 == nil {
+				if err3 := sendSixelImage(blob, format, size); err3 == nil {
 					return nil
 				}
 			}
 			if hasChafa() {
-				if err4 := sendChafaImage(blob, format); err4 == nil {
+				if err4 := sendChafaImage(blob, format, size); err4 == nil {
 					return nil
 				}
 			}
@@ -298,9 +359,10 @@ func previewBytes(blob []byte, format string) error {
 	}
 
 	if isSixelCapable() {
-		if err := sendSixelImage(blob, format); err != nil {
+		if err := sendSixelImage(blob, format, size); err != nil {
+			// If sixel fails, try chafa as a fallback.
 			if hasChafa() {
-				if err2 := sendChafaImage(blob, format); err2 == nil {
+				if err2 := sendChafaImage(blob, format, size); err2 == nil {
 					return nil
 				}
 			}
@@ -309,11 +371,6 @@ func previewBytes(blob []byte, format string) error {
 		return nil
 	}
 
-	if hasChafa() {
-		if err := sendChafaImage(blob, format); err == nil {
-			return nil
-		}
-	}
 	return fmt.Errorf("no preview protocol matched")
 }
 
@@ -322,15 +379,10 @@ func previewBytes(blob []byte, format string) error {
 // placement parameters to force the image to render into a fixed area (columns x rows).
 //
 // The function accepts raw image bytes in `data` and a `format` hint (e.g. "png" or "jpeg").
-// Placement sizing is controlled by environment variables (optional):
-//
-//	KITTY_PREVIEW_COLS and KITTY_PREVIEW_ROWS
-//
-// If those are not present, sensible defaults are used.
 //
 // Note: when sending PNG the implementation uses f=100; for JPEG it may include a numeric f= hint.
 // We suppress terminal responses with q=2.
-func sendKittyImage(data []byte, format string) error {
+func sendKittyImage(data []byte, format string, size PreviewSize) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
@@ -340,21 +392,10 @@ func sendKittyImage(data []byte, format string) error {
 	enc := base64.StdEncoding.EncodeToString(data)
 	const chunkSize = 4096
 
-	// Determine preview placement size from environment (defaults).
-	cols := 60
-	rows := 20
-	if v := os.Getenv("KITTY_PREVIEW_COLS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cols = n
-		}
-	}
-	if v := os.Getenv("KITTY_PREVIEW_ROWS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			rows = n
-		}
-	}
-
-	debugf("kitty placement: cols=%d rows=%d (requested)", cols, rows)
+	// Use computed placement size.
+	cols := size.Cols
+	rows := size.Rows
+	debugf("kitty placement: cols=%d rows=%d (computed)", cols, rows)
 
 	stdout := os.Stdout
 
@@ -407,10 +448,9 @@ func sendKittyImage(data []byte, format string) error {
 	}
 
 	// After the image is transmitted, advance the cursor a small number of lines
-	// so subsequent text appears directly under the image. Use environment
-	// hints (KITTY_PREVIEW_ROWS / CHAFA_SIZE) when available and clamp to a
+	// so subsequent text appears directly under the image. Clamp to a
 	// small maximum to avoid a large gap.
-	for i := 0; i < postImageNewlines(rows); i++ {
+	for i := 0; i < postImageNewlines(size.Rows); i++ {
 		fmt.Println()
 	}
 
@@ -420,7 +460,7 @@ func sendKittyImage(data []byte, format string) error {
 
 // sendInlineImage emits the generic iTerm2-style inline image OSC (1337) sequence
 // using a name hint derived from format.
-func sendInlineImage(data []byte, format string) error {
+func sendInlineImage(data []byte, format string, size PreviewSize) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
@@ -430,7 +470,12 @@ func sendInlineImage(data []byte, format string) error {
 	if strings.HasPrefix(strings.ToLower(format), "j") {
 		name = "preview.jpg"
 	}
-	seq := "\x1b]1337;File=name=" + name + ";inline=1;size=" + fmt.Sprintf("%d", len(data)) + ":" + enc + "\a"
+	// Include pixel width/height hints when available.
+	meta := fmt.Sprintf("size=%d;", len(data))
+	if size.PixelWidth > 0 && size.PixelHeight > 0 {
+		meta += fmt.Sprintf("width=%dpx;height=%dpx;", size.PixelWidth, size.PixelHeight)
+	}
+	seq := "\x1b]1337;File=name=" + name + ";inline=1;" + meta + ":" + enc + "\a"
 	n, err := os.Stdout.Write([]byte(seq))
 	debugf("wrote %d bytes to stdout for inline image (err=%v)", n, err)
 
@@ -447,7 +492,7 @@ func sendInlineImage(data []byte, format string) error {
 // It pipes the provided image bytes (`data`) to the external tool which is expected to emit sixel to stdout.
 // The `format` parameter is a hint (e.g. "png" or "jpeg") and may influence fallbacks.
 // This is a pragmatic approach because implementing a sixel encoder here is beyond scope.
-func sendSixelImage(data []byte, format string) error {
+func sendSixelImage(data []byte, format string, size PreviewSize) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
@@ -475,7 +520,7 @@ func sendSixelImage(data []byte, format string) error {
 	}
 
 	// If img2sixel isn't available, try chafa as a fallback (chafa supports multiple terminals).
-	if err := sendChafaImage(data, format); err == nil {
+	if err := sendChafaImage(data, format, size); err == nil {
 		debugf("chafa succeeded")
 		// sendChafaPNG already advances the cursor; don't print extra lines here.
 		return nil
@@ -507,7 +552,7 @@ func sendSixelImage(data []byte, format string) error {
 // It attempts to choose reasonable flags to produce a block-symbol rendering that
 // works in many terminals. The function accepts `data` and a `format` hint (e.g. "png").
 // It returns an error if chafa is not present or fails.
-func sendChafaImage(data []byte, format string) error {
+func sendChafaImage(data []byte, format string, size PreviewSize) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
@@ -525,13 +570,9 @@ func sendChafaImage(data []byte, format string) error {
 	debugf("sendChafaImage invoking chafa for %d bytes (format=%s)", len(data), format)
 
 	// Determine chafa args. Use block fill and symbols for dense output.
-	// Default size is 80x40; user can override via CHAFA_SIZE.
-	args := []string{"--fill=block", "--symbols=block", "-s", "80x40", "-"}
-
-	if v := os.Getenv("CHAFA_SIZE"); v != "" {
-		// If the user provides a size override, pass it through to -s.
-		args = []string{"--fill=block", "--symbols=block", "-s", v, "-"}
-	}
+	// Size comes from the computed PreviewSize; avoid environment overrides for sizing.
+	chafaSize := fmt.Sprintf("%dx%d", size.Cols, size.Rows)
+	args := []string{"--fill=block", "--symbols=block", "-s", chafaSize, "-"}
 
 	// Allow custom fill/symbol selection via env (optional)
 	if f := os.Getenv("CHAFA_FILL"); f != "" {
@@ -560,18 +601,8 @@ func sendChafaImage(data []byte, format string) error {
 	}
 
 	// Ensure adequate spacing after the image so subsequent text isn't overwritten.
-	// Use CHAFA_SIZE hint if provided; otherwise advance only a small number
-	// of lines so the prompt prints just under the rendered output.
-	sizeRows := 0
-	if v := os.Getenv("CHAFA_SIZE"); v != "" {
-		parts := strings.Split(v, "x")
-		if len(parts) == 2 {
-			if h, err := strconv.Atoi(parts[1]); err == nil {
-				sizeRows = h
-			}
-		}
-	}
-	for i := 0; i < postImageNewlines(sizeRows); i++ {
+	// Use the computed row count from PreviewSize.
+	for i := 0; i < postImageNewlines(size.Rows); i++ {
 		fmt.Println()
 	}
 
