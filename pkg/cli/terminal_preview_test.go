@@ -122,3 +122,50 @@ func TestPreviewEncodesJPEG(t *testing.T) {
 		t.Fatalf("expected JPEG SOI bytes, got: %x", dec[:4])
 	}
 }
+
+// TestGhosttyForcesPNG ensures that when TERM indicates ghostty and chafa is
+// unavailable, PreviewImage forces PNG encoding even if the requested format
+// is jpeg.
+func TestGhosttyForcesPNG(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	img.Set(0, 0, color.RGBA{10, 20, 30, 255})
+
+	// Disable chafa to force the ghostty-special path.
+	os.Setenv("NO_CHAFA", "1")
+	defer os.Unsetenv("NO_CHAFA")
+
+	// Simulate ghostty TERM and clear inline detectors.
+	os.Unsetenv("TERM_PROGRAM")
+	oldTerm := os.Getenv("TERM")
+	os.Setenv("TERM", "ghostty")
+	defer func() {
+		if oldTerm == "" {
+			os.Unsetenv("TERM")
+		} else {
+			os.Setenv("TERM", oldTerm)
+		}
+	}()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe failed: %v", err)
+	}
+	os.Stdout = w
+
+	// Request jpeg but ghostty should force png
+	if err := PreviewImage(img, "jpeg"); err != nil {
+		t.Fatalf("PreviewImage error: %v", err)
+	}
+	w.Close()
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	os.Stdout = oldStdout
+	out := buf.String()
+
+	// For inline fallback we look for either 1337 sequence or kitty header.
+	// Ensure the transmitted payload/metadata refers to png not jpg.
+	if strings.Contains(out, "preview.jpg") || strings.Contains(out, "name=preview.jpg") {
+		t.Fatalf("expected PNG to be used for ghostty, but output referenced JPG: %q", out)
+	}
+}

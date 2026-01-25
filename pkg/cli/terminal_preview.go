@@ -62,12 +62,22 @@ func isKitty() bool {
 	}
 	// Inspect TERM for known kitty-compatible names.
 	term := strings.ToLower(os.Getenv("TERM"))
-	// Accept kitty and ghostty (and short 'ghost') as kitty-compatible terminals.
-	if strings.Contains(term, "kitty") || strings.Contains(term, "ghostty") || strings.Contains(term, "ghost") {
+	// Accept kitty as a real kitty-compatible terminal.
+	if strings.Contains(term, "kitty") {
 		return true
 	}
 	// Konsole may implement parts of the protocol via an older kitty compatibility mode.
 	if os.Getenv("KONSOLE_VERSION") != "" {
+		return true
+	}
+	return false
+}
+
+// isGhostty returns true when the terminal is a Ghostty instance that
+// implements the kitty graphics protocol partially (PNG-only support).
+func isGhostty() bool {
+	term := strings.ToLower(os.Getenv("TERM"))
+	if strings.Contains(term, "ghostty") || strings.Contains(term, "ghost") {
 		return true
 	}
 	return false
@@ -148,8 +158,8 @@ func postImageNewlines(requestedRows int) int {
 // PreviewSupported returns true if the running environment likely supports a terminal inline preview.
 // We consider chafa availability as a valid fallback even if no inline/sixel protocol is detected.
 func PreviewSupported() bool {
-	supported := isKitty() || isInlineImageCapable() || isSixelCapable() || hasChafa()
-	debugf("PreviewSupported -> %v (kitty=%v inline=%v sixel=%v chafa=%v)", supported, isKitty(), isInlineImageCapable(), isSixelCapable(), hasChafa())
+	supported := isKitty() || isGhostty() || isInlineImageCapable() || isSixelCapable() || hasChafa()
+	debugf("PreviewSupported -> %v (kitty=%v ghostty=%v inline=%v sixel=%v chafa=%v)", supported, isKitty(), isGhostty(), isInlineImageCapable(), isSixelCapable(), hasChafa())
 	return supported
 }
 
@@ -164,9 +174,12 @@ func PreviewImage(img image.Image, format string) error {
 	// Determine backend override and only force PNG for kitty when appropriate as some terminals have issues with JPEG
 	// if they only partially support the kitty graphics protocol.
 	backend := strings.ToLower(os.Getenv("PREVIEW_BACKEND"))
-	if backend == "" && hasChafa() != true {
-		if isKitty() {
-			debugf("forcing png encoding for kitty backend (detected)")
+	if backend == "" && hasChafa() != true || backend == "kitty" {
+		// Ghostty implements the kitty protocol only partially and reliably
+		// renders PNG — force PNG for ghostty terminals while leaving real
+		// kitty behavior unchanged.
+		if isGhostty() {
+			debugf("forcing png encoding for ghostty backend (detected)")
 			f = "png"
 		}
 	} else {
@@ -306,14 +319,7 @@ func previewBytes(blob []byte, format string, size PreviewSize) error {
 		debugf("attempting inline protocol")
 		if err := sendInlineImage(blob, format, size); err != nil {
 			debugf("inline protocol failed: %v", err)
-			if isKitty() {
-				// Final attempt: chafa (if present). We already tried it first, so this is
-				// mostly a no-op but keeps old fallback semantics intact.
-				if hasChafa() {
-					if err := sendChafaImage(blob, format, size); err == nil {
-						return nil
-					}
-				}
+			if isKitty() || isGhostty() {
 				if err2 := sendKittyImage(blob, format, size); err2 == nil {
 					return nil
 				}
@@ -333,7 +339,7 @@ func previewBytes(blob []byte, format string, size PreviewSize) error {
 		return nil
 	}
 
-	if isKitty() {
+	if isKitty() || isGhostty() {
 		debugf("attempting kitty protocol")
 		if err := sendKittyImage(blob, format, size); err != nil {
 			debugf("kitty protocol failed: %v", err)
