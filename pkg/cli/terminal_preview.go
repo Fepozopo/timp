@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"os/exec"
@@ -175,20 +176,29 @@ func PreviewSupported() bool {
 	return supported
 }
 
-// PreviewImage encodes an image.Image to PNG and previews it in terminal (delegates to previewPNGBytes).
-func PreviewImage(img image.Image) error {
+// PreviewImage encodes an image.Image to the requested container format and previews it in terminal.
+// format should be a lowercase string like "png" or "jpeg". If empty or unrecognized, PNG is used.
+func PreviewImage(img image.Image, format string) error {
 	if img == nil {
 		return fmt.Errorf("nil image")
 	}
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return fmt.Errorf("png encode failed: %w", err)
+	f := strings.ToLower(format)
+	if f == "jpeg" || f == "jpg" {
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 92}); err != nil {
+			return fmt.Errorf("jpeg encode failed: %w", err)
+		}
+	} else {
+		if err := png.Encode(&buf, img); err != nil {
+			return fmt.Errorf("png encode failed: %w", err)
+		}
+		f = "png"
 	}
-	return previewPNGBytes(buf.Bytes())
+	return previewBytes(buf.Bytes(), f)
 }
 
 // previewPNGBytes centralizes the logic of sending PNG bytes via kitty/inline/sixel/chafa.
-func previewPNGBytes(blob []byte) error {
+func previewBytes(blob []byte, format string) error {
 	if len(blob) == 0 {
 		return fmt.Errorf("empty image blob")
 	}
@@ -196,21 +206,21 @@ func previewPNGBytes(blob []byte) error {
 	// Prefer kitty if available (unicode placeholders / placement)
 	if isKitty() {
 		debugf("attempting kitty protocol")
-		if err := sendKittyPNG(blob); err != nil {
+		if err := sendKittyImage(blob, format); err != nil {
 			debugf("kitty protocol failed: %v", err)
 			// try other fallbacks
 			if isInlineImageCapable() {
-				if err2 := sendInlineImagePNG(blob); err2 == nil {
+				if err2 := sendInlineImage(blob, format); err2 == nil {
 					return nil
 				}
 			}
 			if isSixelCapable() {
-				if err3 := sendSixelPNG(blob); err3 == nil {
+				if err3 := sendSixelImage(blob, format); err3 == nil {
 					return nil
 				}
 			}
 			if hasChafa() {
-				if err4 := sendChafaPNG(blob); err4 == nil {
+				if err4 := sendChafaImage(blob, format); err4 == nil {
 					return nil
 				}
 			}
@@ -220,14 +230,14 @@ func previewPNGBytes(blob []byte) error {
 	}
 
 	if isInlineImageCapable() {
-		if err := sendInlineImagePNG(blob); err != nil {
+		if err := sendInlineImage(blob, format); err != nil {
 			if isSixelCapable() {
-				if err2 := sendSixelPNG(blob); err2 == nil {
+				if err2 := sendSixelImage(blob, format); err2 == nil {
 					return nil
 				}
 			}
 			if hasChafa() {
-				if err3 := sendChafaPNG(blob); err3 == nil {
+				if err3 := sendChafaImage(blob, format); err3 == nil {
 					return nil
 				}
 			}
@@ -237,9 +247,9 @@ func previewPNGBytes(blob []byte) error {
 	}
 
 	if isSixelCapable() {
-		if err := sendSixelPNG(blob); err != nil {
+		if err := sendSixelImage(blob, format); err != nil {
 			if hasChafa() {
-				if err2 := sendChafaPNG(blob); err2 == nil {
+				if err2 := sendChafaImage(blob, format); err2 == nil {
 					return nil
 				}
 			}
@@ -249,7 +259,7 @@ func previewPNGBytes(blob []byte) error {
 	}
 
 	if hasChafa() {
-		if err := sendChafaPNG(blob); err == nil {
+		if err := sendChafaImage(blob, format); err == nil {
 			return nil
 		}
 	}
@@ -269,12 +279,12 @@ func previewPNGBytes(blob []byte) error {
 // Note: we still transmit PNG data (f=100) and a=T to transmit+display. The keys `c` and `r`
 // request the image be displayed over the specified number of columns and rows respectively.
 // We suppress terminal responses with q=2.
-func sendKittyPNG(data []byte) error {
+func sendKittyImage(data []byte, format string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
 
-	debugf("sendKittyPNG preparing to send %d bytes (raw PNG)", len(data))
+	debugf("sendKittyImage preparing to send %d bytes (raw %s)", len(data), format)
 
 	enc := base64.StdEncoding.EncodeToString(data)
 	const chunkSize = 4096
@@ -320,9 +330,18 @@ func sendKittyPNG(data []byte) error {
 
 		if first {
 			// First chunk includes full control keys and placement (c,r).
-			// a=T transmit+display, f=100 PNG, t=d direct payload,
-			// q=2 suppress responses, c=<cols>, r=<rows> request rendering area.
-			header := fmt.Sprintf("\x1b_Ga=T,f=100,t=d,q=2,c=%d,r=%d,m=%s;", cols, rows, mVal)
+			// a=T transmit+display, t=d direct payload, q=2 suppress responses,
+			// c=<cols>, r=<rows> request rendering area.
+			// Include an explicit `f=` token for PNG to match kitty expectations.
+			fTok := ""
+			if strings.HasPrefix(strings.ToLower(format), "png") {
+				fTok = "f=100,"
+			} else if strings.HasPrefix(strings.ToLower(format), "j") {
+				// common kitty numeric id for JPEG is 24 (used by some implementations);
+				// include it as a hint — if incorrect terminals should still try to detect.
+				fTok = "f=24,"
+			}
+			header := fmt.Sprintf("\x1b_Ga=T,%st=d,q=2,c=%d,r=%d,m=%s;", fTok, cols, rows, mVal)
 			header += chunk + "\x1b\\"
 			if err := writeSeq(header); err != nil {
 				return err
@@ -354,12 +373,22 @@ func sendKittyPNG(data []byte) error {
 // Many terminals implement a compatible inline-image OSC (iTerm2, WezTerm, Warp, Tabby, VSCode, etc).
 // Format: ESC ] 1337 ; File=inline=1;size=<n> : <base64> BEL
 func sendInlineImagePNG(data []byte) error {
+	return sendInlineImage(data, "png")
+}
+
+// sendInlineImage emits the generic iTerm2-style inline image OSC (1337) sequence
+// using a name hint derived from format.
+func sendInlineImage(data []byte, format string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
-	debugf("sendInlineImagePNG preparing to send %d bytes", len(data))
+	debugf("sendInlineImage preparing to send %d bytes (format=%s)", len(data), format)
 	enc := base64.StdEncoding.EncodeToString(data)
-	seq := "\x1b]1337;File=inline=1;size=" + fmt.Sprintf("%d", len(data)) + ":" + enc + "\a"
+	name := "preview.png"
+	if strings.HasPrefix(strings.ToLower(format), "j") {
+		name = "preview.jpg"
+	}
+	seq := "\x1b]1337;File=name=" + name + ";inline=1;size=" + fmt.Sprintf("%d", len(data)) + ":" + enc + "\a"
 	n, err := os.Stdout.Write([]byte(seq))
 	debugf("wrote %d bytes to stdout for inline image (err=%v)", n, err)
 
@@ -375,12 +404,12 @@ func sendInlineImagePNG(data []byte) error {
 // sendSixelPNG attempts to render PNG data using an external sixel renderer (img2sixel).
 // It pipes the PNG bytes to the external tool which is expected to emit sixel to stdout.
 // This is a pragmatic approach because implementing a sixel encoder here is beyond scope.
-func sendSixelPNG(data []byte) error {
+func sendSixelImage(data []byte, format string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
 
-	debugf("sendSixelPNG attempting img2sixel (or chafa) for %d bytes", len(data))
+	debugf("sendSixelImage attempting img2sixel (or chafa) for %d bytes (format=%s)", len(data), format)
 
 	// Try to locate a suitable external sixel tool.
 	// Common tool: img2sixel (part of libsixel or some distributions).
@@ -403,7 +432,7 @@ func sendSixelPNG(data []byte) error {
 	}
 
 	// If img2sixel isn't available, try chafa as a fallback (chafa supports multiple terminals).
-	if err := sendChafaPNG(data); err == nil {
+	if err := sendChafaImage(data, format); err == nil {
 		debugf("chafa succeeded")
 		// sendChafaPNG already advances the cursor; don't print extra lines here.
 		return nil
@@ -413,8 +442,13 @@ func sendSixelPNG(data []byte) error {
 
 	// As a last resort, write a small inline PNG with base64 to the terminal (rarely supported).
 	debugf("falling back to inline PNG base64 sequence as last resort")
+	// Last-resort inline hint with name reflecting format.
 	enc := base64.StdEncoding.EncodeToString(data)
-	seq := "\x1b]1337;File=name=preview.png;inline=1;size=" + fmt.Sprintf("%d", len(data)) + ":" + enc + "\a"
+	name := "preview.png"
+	if strings.HasPrefix(strings.ToLower(format), "j") {
+		name = "preview.jpg"
+	}
+	seq := "\x1b]1337;File=name=" + name + ";inline=1;size=" + fmt.Sprintf("%d", len(data)) + ":" + enc + "\a"
 	n, err := os.Stdout.Write([]byte(seq))
 	debugf("wrote %d bytes for inline PNG fallback (err=%v)", n, err)
 
@@ -429,7 +463,7 @@ func sendSixelPNG(data []byte) error {
 // sendChafaPNG invokes chafa to render the provided PNG bytes to stdout.
 // It attempts to choose reasonable flags to produce a block-symbol rendering that
 // works in many terminals. The function returns an error if chafa is not present or fails.
-func sendChafaPNG(data []byte) error {
+func sendChafaImage(data []byte, format string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
 	}
@@ -444,7 +478,7 @@ func sendChafaPNG(data []byte) error {
 		return fmt.Errorf("chafa not found in PATH: %w", err)
 	}
 
-	debugf("sendChafaPNG invoking chafa for %d bytes", len(data))
+	debugf("sendChafaImage invoking chafa for %d bytes (format=%s)", len(data), format)
 
 	// Determine chafa args. Use block fill and symbols for dense output.
 	// Default size is 80x40; user can override via CHAFA_SIZE.
