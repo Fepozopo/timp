@@ -370,15 +370,11 @@ func sendKittyImage(data []byte, format string) error {
 			// a=T transmit+display, t=d direct payload, q=2 suppress responses,
 			// c=<cols>, r=<rows> request rendering area.
 			// Include an explicit `f=` token for PNG to match kitty expectations.
-			// Prefer omitting `f=` so kitty detects by content. Only include an
-			// explicit f= token if the user asked via PREVIEW_FORCE_FTOKEN.
 			fTok := ""
-			if v := strings.ToLower(os.Getenv("PREVIEW_FORCE_FTOKEN")); v != "" {
-				if strings.HasPrefix(strings.ToLower(format), "png") {
-					fTok = "f=100,"
-				} else if strings.HasPrefix(strings.ToLower(format), "j") {
-					fTok = "f=24,"
-				}
+			if strings.HasPrefix(strings.ToLower(format), "png") {
+				fTok = "f=100,"
+			} else if strings.HasPrefix(strings.ToLower(format), "j") {
+				fTok = "f=100,"
 			}
 			header := fmt.Sprintf("\x1b_Ga=T,%st=d,q=2,c=%d,r=%d,m=%s;", fTok, cols, rows, mVal)
 			header += chunk + "\x1b\\"
@@ -406,13 +402,6 @@ func sendKittyImage(data []byte, format string) error {
 
 	// Done
 	return nil
-}
-
-// sendInlineImagePNG emits the generic iTerm2-style inline image OSC (1337) sequence.
-// Many terminals implement a compatible inline-image OSC (iTerm2, WezTerm, Warp, Tabby, VSCode, etc).
-// Format: ESC ] 1337 ; File=inline=1;size=<n> : <base64> BEL
-func sendInlineImagePNG(data []byte) error {
-	return sendInlineImage(data, "png")
 }
 
 // sendInlineImage emits the generic iTerm2-style inline image OSC (1337) sequence
