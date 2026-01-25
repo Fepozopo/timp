@@ -203,14 +203,49 @@ func previewBytes(blob []byte, format string) error {
 		return fmt.Errorf("empty image blob")
 	}
 
-	// Prefer kitty if available (unicode placeholders / placement)
-	if isKitty() {
-		debugf("attempting kitty protocol")
-		if err := sendKittyImage(blob, format); err != nil {
-			debugf("kitty protocol failed: %v", err)
-			// try other fallbacks
-			if isInlineImageCapable() {
-				if err2 := sendInlineImage(blob, format); err2 == nil {
+	// Allow overriding preferred backend via PREVIEW_BACKEND (e.g. "kitty", "inline", "sixel", "chafa").
+	// If set, attempt that backend first but still fall back to the usual sequence on error.
+	if v := strings.ToLower(os.Getenv("PREVIEW_BACKEND")); v != "" {
+		debugf("PREVIEW_BACKEND override: %s", v)
+		switch v {
+		case "kitty":
+			if err := sendKittyImage(blob, format); err == nil {
+				return nil
+			} else {
+				debugf("override kitty failed: %v", err)
+			}
+		case "inline", "iterm", "wezterm":
+			if err := sendInlineImage(blob, format); err == nil {
+				return nil
+			} else {
+				debugf("override inline failed: %v", err)
+			}
+		case "sixel":
+			if err := sendSixelImage(blob, format); err == nil {
+				return nil
+			} else {
+				debugf("override sixel failed: %v", err)
+			}
+		case "chafa":
+			if err := sendChafaImage(blob, format); err == nil {
+				return nil
+			} else {
+				debugf("override chafa failed: %v", err)
+			}
+		default:
+			debugf("unknown PREVIEW_BACKEND value: %s", v)
+		}
+		// fall through to normal detection/fallback order
+	}
+
+	// Default detection/fallback order: inline-capable, kitty, sixel, chafa.
+	// Inline is tried first because many modern terminals implement it reliably.
+	if isInlineImageCapable() {
+		debugf("attempting inline protocol")
+		if err := sendInlineImage(blob, format); err != nil {
+			debugf("inline protocol failed: %v", err)
+			if isKitty() {
+				if err2 := sendKittyImage(blob, format); err2 == nil {
 					return nil
 				}
 			}
@@ -224,24 +259,26 @@ func previewBytes(blob []byte, format string) error {
 					return nil
 				}
 			}
-			return fmt.Errorf("kitty preview failed: %w", err)
+			return fmt.Errorf("inline image preview failed: %w", err)
 		}
 		return nil
 	}
 
-	if isInlineImageCapable() {
-		if err := sendInlineImage(blob, format); err != nil {
+	if isKitty() {
+		debugf("attempting kitty protocol")
+		if err := sendKittyImage(blob, format); err != nil {
+			debugf("kitty protocol failed: %v", err)
 			if isSixelCapable() {
-				if err2 := sendSixelImage(blob, format); err2 == nil {
+				if err3 := sendSixelImage(blob, format); err3 == nil {
 					return nil
 				}
 			}
 			if hasChafa() {
-				if err3 := sendChafaImage(blob, format); err3 == nil {
+				if err4 := sendChafaImage(blob, format); err4 == nil {
 					return nil
 				}
 			}
-			return fmt.Errorf("inline image preview failed: %w", err)
+			return fmt.Errorf("kitty preview failed: %w", err)
 		}
 		return nil
 	}
@@ -333,13 +370,15 @@ func sendKittyImage(data []byte, format string) error {
 			// a=T transmit+display, t=d direct payload, q=2 suppress responses,
 			// c=<cols>, r=<rows> request rendering area.
 			// Include an explicit `f=` token for PNG to match kitty expectations.
+			// Prefer omitting `f=` so kitty detects by content. Only include an
+			// explicit f= token if the user asked via PREVIEW_FORCE_FTOKEN.
 			fTok := ""
-			if strings.HasPrefix(strings.ToLower(format), "png") {
-				fTok = "f=100,"
-			} else if strings.HasPrefix(strings.ToLower(format), "j") {
-				// common kitty numeric id for JPEG is 24 (used by some implementations);
-				// include it as a hint — if incorrect terminals should still try to detect.
-				fTok = "f=24,"
+			if v := strings.ToLower(os.Getenv("PREVIEW_FORCE_FTOKEN")); v != "" {
+				if strings.HasPrefix(strings.ToLower(format), "png") {
+					fTok = "f=100,"
+				} else if strings.HasPrefix(strings.ToLower(format), "j") {
+					fTok = "f=24,"
+				}
 			}
 			header := fmt.Sprintf("\x1b_Ga=T,%st=d,q=2,c=%d,r=%d,m=%s;", fTok, cols, rows, mVal)
 			header += chunk + "\x1b\\"
