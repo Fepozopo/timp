@@ -197,7 +197,7 @@ func PreviewImage(img image.Image, format string) error {
 	return previewBytes(buf.Bytes(), f)
 }
 
-// previewPNGBytes centralizes the logic of sending PNG bytes via kitty/inline/sixel/chafa.
+// previewBytes centralizes the logic of sending bytes via kitty/inline/sixel/chafa.
 func previewBytes(blob []byte, format string) error {
 	if len(blob) == 0 {
 		return fmt.Errorf("empty image blob")
@@ -266,18 +266,18 @@ func previewBytes(blob []byte, format string) error {
 	return fmt.Errorf("no preview protocol matched")
 }
 
-// sendKittyPNG pushes PNG bytes to the terminal using the kitty graphics protocol.
+// sendKittyImage sends encoded image bytes to the terminal using the kitty graphics protocol.
 // It chunks base64 payload into <=4096-byte chunks per spec. The first chunk includes
 // placement parameters to force the image to render into a fixed area (columns x rows).
 //
+// The function accepts raw image bytes in `data` and a `format` hint (e.g. "png" or "jpeg").
 // Placement sizing is controlled by environment variables (optional):
 //
 //	KITTY_PREVIEW_COLS and KITTY_PREVIEW_ROWS
 //
 // If those are not present, sensible defaults are used.
 //
-// Note: we still transmit PNG data (f=100) and a=T to transmit+display. The keys `c` and `r`
-// request the image be displayed over the specified number of columns and rows respectively.
+// Note: when sending PNG the implementation uses f=100; for JPEG it may include a numeric f= hint.
 // We suppress terminal responses with q=2.
 func sendKittyImage(data []byte, format string) error {
 	if len(data) == 0 {
@@ -401,8 +401,9 @@ func sendInlineImage(data []byte, format string) error {
 	return err
 }
 
-// sendSixelPNG attempts to render PNG data using an external sixel renderer (img2sixel).
-// It pipes the PNG bytes to the external tool which is expected to emit sixel to stdout.
+// sendSixelImage attempts to render image data using an external sixel renderer (img2sixel).
+// It pipes the provided image bytes (`data`) to the external tool which is expected to emit sixel to stdout.
+// The `format` parameter is a hint (e.g. "png" or "jpeg") and may influence fallbacks.
 // This is a pragmatic approach because implementing a sixel encoder here is beyond scope.
 func sendSixelImage(data []byte, format string) error {
 	if len(data) == 0 {
@@ -460,9 +461,10 @@ func sendSixelImage(data []byte, format string) error {
 	return err
 }
 
-// sendChafaPNG invokes chafa to render the provided PNG bytes to stdout.
+// sendChafaImage invokes chafa to render the provided image bytes to stdout.
 // It attempts to choose reasonable flags to produce a block-symbol rendering that
-// works in many terminals. The function returns an error if chafa is not present or fails.
+// works in many terminals. The function accepts `data` and a `format` hint (e.g. "png").
+// It returns an error if chafa is not present or fails.
 func sendChafaImage(data []byte, format string) error {
 	if len(data) == 0 {
 		return fmt.Errorf("no data")
