@@ -20,7 +20,11 @@ func TestPreviewInlineSequence(t *testing.T) {
 	img.Set(0, 1, color.RGBA{0, 0, 255, 255})
 	img.Set(1, 1, color.RGBA{255, 255, 0, 255})
 
-	// Force inline-capable detection and ensure we don't hit kitty heuristics
+	// Force inline-capable detection and ensure we don't hit kitty heuristics.
+	// Ensure chafa is disabled for this test to keep output deterministic if chafa is installed.
+	os.Setenv("NO_CHAFA", "1")
+	defer os.Unsetenv("NO_CHAFA")
+
 	os.Setenv("TERM_PROGRAM", "WezTerm")
 	oldTerm := os.Getenv("TERM")
 	os.Setenv("TERM", "xterm-256color")
@@ -63,6 +67,10 @@ func TestPreviewInlineSequence(t *testing.T) {
 func TestPreviewEncodesJPEG(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
 	img.Set(0, 0, color.RGBA{10, 20, 30, 255})
+
+	// Ensure chafa is disabled so we exercise the inline encoding branch deterministically.
+	os.Setenv("NO_CHAFA", "1")
+	defer os.Unsetenv("NO_CHAFA")
 
 	os.Setenv("TERM_PROGRAM", "WezTerm")
 	oldTerm := os.Getenv("TERM")
