@@ -1,8 +1,10 @@
 package stdimg
 
 import (
+	"fmt"
 	"image"
 	"math"
+	"sort"
 )
 
 // ComputeHistogram computes per-channel histograms with `bins` bins (e.g., 256).
@@ -27,26 +29,24 @@ func ComputeHistogram(src *image.NRGBA, bins int) ([]int, []int, []int) {
 			r := src.Pix[i+0]
 			g := src.Pix[i+1]
 			b_ := src.Pix[i+2]
-			rHist[int(math.Floor(float64(r)*scale))]++
-			gHist[int(math.Floor(float64(g)*scale))]++
-			bHist[int(math.Floor(float64(b_)*scale))]++
-		}
-	}
-	// handle possible index==bins due to r==255 rounding
-	fix := func(hs []int) {
-		if len(hs) == 0 {
-			return
-		}
-		if idx := len(hs); idx > 0 {
-			// ensure no out-of-range
-			if hs[len(hs)-1] == 0 {
-				// nothing
+			// floor mapping to bin index
+			rIdx := int(math.Floor(float64(r) * scale))
+			gIdx := int(math.Floor(float64(g) * scale))
+			bIdx := int(math.Floor(float64(b_) * scale))
+			if rIdx >= len(rHist) {
+				rIdx = len(rHist) - 1
 			}
+			if gIdx >= len(gHist) {
+				gIdx = len(gHist) - 1
+			}
+			if bIdx >= len(bHist) {
+				bIdx = len(bHist) - 1
+			}
+			rHist[rIdx]++
+			gHist[gIdx]++
+			bHist[bIdx]++
 		}
 	}
-	fix(rHist)
-	fix(gHist)
-	fix(bHist)
 	return rHist, gHist, bHist
 }
 
@@ -173,6 +173,15 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 			return dst
 		}
 		maxIdx := float64(len(hist) - 1)
+		// when plotW == 1, average across all bins so the single pixel has representative value
+		if plotW == 1 {
+			tot := 0.0
+			for _, v := range hist {
+				tot += float64(v)
+			}
+			dst[0] = tot / float64(len(hist))
+			return dst
+		}
 		for xi := 0; xi < plotW; xi++ {
 			pos := float64(xi) * maxIdx / float64(plotW-1)
 			lo := int(math.Floor(pos))
@@ -249,29 +258,151 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 	}
 	lumF := resampleFloat(lumBins)
 
-	// find max across resampled arrays
-	maxv := 1.0
+	// compute resampled max (what we actually draw)
+	resMax := 0.0
 	for _, a := range [][]float64{rF, gF, bF, lumF} {
 		for _, v := range a {
-			if v > maxv {
-				maxv = v
+			if v > resMax {
+				resMax = v
 			}
 		}
 	}
-	if maxv <= 0 {
-		maxv = 1
+	if resMax <= 0 {
+		resMax = 1.0
 	}
 
-	// normalize to 0..1
-	norm := func(v float64) float64 { return v / maxv }
+	// Build a combined slice and use a high percentile (e.g. 99th) to avoid single outliers
+	vals := make([]float64, 0, len(rF)+len(gF)+len(bF)+len(lumF))
+	vals = append(vals, rF...)
+	vals = append(vals, gF...)
+	vals = append(vals, bF...)
+	vals = append(vals, lumF...)
+	sort.Float64s(vals)
+	percentile := 0.99
+	percentileVal := 0.0
+	if len(vals) > 0 {
+		idx := int(math.Floor(percentile * float64(len(vals)-1)))
+		if idx < 0 {
+			idx = 0
+		}
+		percentileVal = vals[idx]
+		if percentileVal <= 0 {
+			percentileVal = resMax
+		}
+	} else {
+		percentileVal = resMax
+	}
 
-	// draw horizontal grid lines (4 lines)
+	// smoothing helper (simple moving average)
+	smooth := func(a []float64, win int) []float64 {
+		n := len(a)
+		outS := make([]float64, n)
+		if n == 0 || win <= 1 {
+			copy(outS, a)
+			return outS
+		}
+		half := win / 2
+		for i := 0; i < n; i++ {
+			sum := 0.0
+			cnt := 0
+			for j := i - half; j <= i+half; j++ {
+				if j >= 0 && j < n {
+					sum += a[j]
+					cnt++
+				}
+			}
+			if cnt > 0 {
+				outS[i] = sum / float64(cnt)
+			} else {
+				outS[i] = a[i]
+			}
+		}
+		return outS
+	}
+
+	// compute smoothed max using a 20-pixel window (helps avoid very narrow spikes)
+	smoothedMax := 0.0
+	for _, arr := range [][]float64{rF, gF, bF, lumF} {
+		s := smooth(arr, 20)
+		for _, v := range s {
+			if v > smoothedMax {
+				smoothedMax = v
+			}
+		}
+	}
+	if smoothedMax <= 0 {
+		smoothedMax = resMax
+	}
+
+	// choose a base max that prefers smoothedMax but respects the percentile
+	baseMax := math.Max(smoothedMax, percentileVal)
+	if baseMax <= 0 {
+		baseMax = resMax
+	}
+	// small headroom above the base max so curves don't butt right against the top
+	capMargin := 0.05
+	capMax := baseMax * (1.0 + capMargin)
+	if capMax <= 0 {
+		capMax = 1.0
+	}
+
+	// normalize to 0..1 using capMax
+	norm := func(v float64) float64 { return v / capMax }
+
+	// draw horizontal grid lines (4 lines) and numeric labels inside panel
 	gridLines := 4
+
+	// small 3x5 font for digits '0'..'9' (each row is 3 bits)
+	font := map[rune][5]uint8{
+		'0': {0x7, 0x5, 0x5, 0x5, 0x7},
+		'1': {0x2, 0x6, 0x2, 0x2, 0x7},
+		'2': {0x7, 0x1, 0x7, 0x4, 0x7},
+		'3': {0x7, 0x1, 0x7, 0x1, 0x7},
+		'4': {0x5, 0x5, 0x7, 0x1, 0x1},
+		'5': {0x7, 0x4, 0x7, 0x1, 0x7},
+		'6': {0x7, 0x4, 0x7, 0x5, 0x7},
+		'7': {0x7, 0x1, 0x2, 0x4, 0x4},
+		'8': {0x7, 0x5, 0x7, 0x5, 0x7},
+		'9': {0x7, 0x5, 0x7, 0x1, 0x7},
+		'.': {0x0, 0x0, 0x0, 0x6, 0x6},
+	}
+	drawSmallText := func(x0, y0 int, s string, col [3]uint8) {
+		cx := x0
+		for _, ch := range s {
+			pat, ok := font[ch]
+			if !ok {
+				// advance by a small gap for unsupported chars
+				cx += 4
+				continue
+			}
+			for ry := 0; ry < 5; ry++ {
+				row := pat[ry]
+				for rx := 0; rx < 3; rx++ {
+					if (row>>uint(2-rx))&1 == 0 {
+						continue
+					}
+					px := cx + rx
+					py := y0 + ry
+					if px < left || px >= right || py < top || py >= bottom {
+						continue
+					}
+					i := out.PixOffset(px, py)
+					out.Pix[i+0] = col[0]
+					out.Pix[i+1] = col[1]
+					out.Pix[i+2] = col[2]
+					out.Pix[i+3] = 255
+				}
+			}
+			cx += 4 // char width + spacing
+		}
+	}
+
 	for gi := 0; gi <= gridLines; gi++ {
 		y := top + int(math.Round(float64(plotH)*float64(gi)/float64(gridLines)))
 		if y < top || y >= bottom {
 			continue
 		}
+		// line
 		for x := left; x < right; x++ {
 			i := out.PixOffset(x, y)
 			out.Pix[i+0] = uint8(gridCol[0])
@@ -279,7 +410,47 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 			out.Pix[i+2] = uint8(gridCol[2])
 			out.Pix[i+3] = 255
 		}
+		// label value corresponding to this grid line (top -> capMax, bottom -> 0)
+		valF := (1.0 - float64(gi)/float64(gridLines)) * capMax
+		// format label with integer thousands when large
+		label := fmt.Sprintf("%.0f", valF)
+		labelY := y - 3
+		if labelY < top {
+			labelY = top
+		}
+		if labelY+5 >= bottom {
+			labelY = bottom - 6
+		}
+		drawSmallText(left+4, labelY, label, [3]uint8{200, 200, 200})
 	}
+
+	// // Debug overlay: draw a thin line at the actual plotted max (resMax) and show debug numeric labels
+	// plotMax := resMax
+	// if plotMax > capMax {
+	// 	plotMax = capMax
+	// }
+	// plotYP := top + (plotH - 1) - int(math.Round((plotMax/capMax)*float64(plotH-1)))
+	// if plotYP < top {
+	// 	plotYP = top
+	// }
+	// if plotYP >= bottom {
+	// 	plotYP = bottom - 1
+	// }
+	// for x := left; x < right; x++ {
+	// 	i := out.PixOffset(x, plotYP)
+	// 	out.Pix[i+0] = 255
+	// 	out.Pix[i+1] = 200
+	// 	out.Pix[i+2] = 20
+	// 	out.Pix[i+3] = 255
+	// }
+
+	// // Compose debug labels: resMax, smoothedMax, percentileVal, capMax
+	// debugX := left + 6
+	// debugY := top + 2
+	// drawSmallText(debugX, debugY, fmt.Sprintf("%.0f", resMax), [3]uint8{255, 200, 20})
+	// drawSmallText(debugX, debugY+7, fmt.Sprintf("%.0f", smoothedMax), [3]uint8{255, 140, 40})
+	// drawSmallText(debugX, debugY+14, fmt.Sprintf("%.0f", percentileVal), [3]uint8{120, 200, 200})
+	// drawSmallText(debugX, debugY+21, fmt.Sprintf("%.0f", capMax), [3]uint8{200, 200, 200})
 
 	// helper blend dst, overlay with alpha (0..1)
 	blendChannel := func(dst uint8, overlay uint8, alpha float64) uint8 {

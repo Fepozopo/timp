@@ -613,7 +613,7 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 		}
 		rHist, gHist, bHist := ComputeHistogram(src, bins)
 		// Render a small histogram PNG and return as image
-		histImg := RenderHistogramImage(rHist, gHist, bHist, 512, 120)
+		histImg := RenderHistogramImage(rHist, gHist, bHist, 1024, 240)
 		return histImg, nil
 
 	case "equalize":
