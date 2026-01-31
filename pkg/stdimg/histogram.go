@@ -7,6 +7,16 @@ import (
 	"sort"
 )
 
+// HistogramSmoothWindow controls the smoothing window (in pixels) used when computing a smoothed max
+// for histogram rendering. This is exposed so callers (e.g., the `histogram` command) can adjust the
+// amount of smoothing applied when determining the histogram vertical scaling. Default is 20.
+//
+// Behavior note for users:
+// - Increasing the window will "zoom in" (more smoothing → localized peaks are emphasized, very narrow spikes are suppressed).
+// - Decreasing the window will "zoom out" (less smoothing → more fine-grained detail and narrow spikes are visible).
+// Default: 20 pixels.
+var HistogramSmoothWindow = 20
+
 // ComputeHistogram computes per-channel histograms with `bins` bins (e.g., 256).
 // Returns three slices for R, G, B counts.
 func ComputeHistogram(src *image.NRGBA, bins int) ([]int, []int, []int) {
@@ -320,10 +330,10 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 		return outS
 	}
 
-	// compute smoothed max using a 20-pixel window (helps avoid very narrow spikes)
+	// compute smoothed max using the configured pixel window (helps avoid very narrow spikes)
 	smoothedMax := 0.0
 	for _, arr := range [][]float64{rF, gF, bF, lumF} {
-		s := smooth(arr, 20)
+		s := smooth(arr, HistogramSmoothWindow)
 		for _, v := range s {
 			if v > smoothedMax {
 				smoothedMax = v

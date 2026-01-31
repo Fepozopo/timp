@@ -604,11 +604,21 @@ func ApplyCommandStdlib(img image.Image, commandName string, args []string) (ima
 		return out, nil
 
 	case "histogram":
-		// optional arg: bins
+		// optional args: bins [pixelWindow]
+		// bins: number of histogram bins (e.g. 256)
+		// pixelWindow: smoothing window (pixels) used when computing the smoothed max / vertical scaling.
+		//   - decreasing the window will "zoom out" (more fine detail / narrow spikes visible)
+		//   - increasing the window will "zoom in" (more smoothing / narrow spikes suppressed)
 		bins := 256
 		if len(args) > 0 && args[0] != "" {
 			if v, err := strconv.Atoi(args[0]); err == nil && v > 0 {
 				bins = v
+			}
+		}
+		// If a pixelWindow was provided, update the package-level HistogramSmoothWindow.
+		if len(args) > 1 && args[1] != "" {
+			if v, err := strconv.Atoi(args[1]); err == nil && v > 0 {
+				HistogramSmoothWindow = v
 			}
 		}
 		rHist, gHist, bHist := ComputeHistogram(src, bins)

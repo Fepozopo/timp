@@ -174,10 +174,13 @@ var Commands = []CommandSpec{
 		Description: "Horizontal flip.",
 	},
 	{
-		Name:        "histogram",
-		Args:        []ArgSpec{{"bins", "int", false, "256", "number of bins"}},
-		Usage:       "histogram [bins]",
-		Description: "Render a histogram image (returns image).",
+		Name: "histogram",
+		Args: []ArgSpec{
+			{"bins", "int", false, "256", "number of bins"},
+			{"pixelWindow", "int", false, "20", "smoothing window in pixels (default 20). Decrease to zoom out (show more narrow spikes); increase to zoom in (more smoothing)."},
+		},
+		Usage:       "histogram [bins] [pixelWindow]",
+		Description: "Render a histogram image (returns image)",
 	},
 	{
 		Name:        "equalize",
