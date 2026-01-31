@@ -434,34 +434,6 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 		drawSmallText(left+4, labelY, label, [3]uint8{200, 200, 200})
 	}
 
-	// // Debug overlay: draw a thin line at the actual plotted max (resMax) and show debug numeric labels
-	// plotMax := resMax
-	// if plotMax > capMax {
-	// 	plotMax = capMax
-	// }
-	// plotYP := top + (plotH - 1) - int(math.Round((plotMax/capMax)*float64(plotH-1)))
-	// if plotYP < top {
-	// 	plotYP = top
-	// }
-	// if plotYP >= bottom {
-	// 	plotYP = bottom - 1
-	// }
-	// for x := left; x < right; x++ {
-	// 	i := out.PixOffset(x, plotYP)
-	// 	out.Pix[i+0] = 255
-	// 	out.Pix[i+1] = 200
-	// 	out.Pix[i+2] = 20
-	// 	out.Pix[i+3] = 255
-	// }
-
-	// // Compose debug labels: resMax, smoothedMax, percentileVal, capMax
-	// debugX := left + 6
-	// debugY := top + 2
-	// drawSmallText(debugX, debugY, fmt.Sprintf("%.0f", resMax), [3]uint8{255, 200, 20})
-	// drawSmallText(debugX, debugY+7, fmt.Sprintf("%.0f", smoothedMax), [3]uint8{255, 140, 40})
-	// drawSmallText(debugX, debugY+14, fmt.Sprintf("%.0f", percentileVal), [3]uint8{120, 200, 200})
-	// drawSmallText(debugX, debugY+21, fmt.Sprintf("%.0f", capMax), [3]uint8{200, 200, 200})
-
 	// helper blend dst, overlay with alpha (0..1)
 	blendChannel := func(dst uint8, overlay uint8, alpha float64) uint8 {
 		return uint8(math.Round(alpha*float64(overlay) + (1.0-alpha)*float64(dst)))
