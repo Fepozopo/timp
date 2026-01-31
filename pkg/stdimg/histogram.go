@@ -101,8 +101,8 @@ func Equalize(src *image.NRGBA) *image.NRGBA {
 	return out
 }
 
-// RenderHistogramImage renders a simple overlaid histogram image for the given histograms.
-// histR/G/B slices length == bins. width/height choose the output image size.
+// RenderHistogramImage renders a smooth, filled, overlaid histogram image for the given histograms.
+// It draws a dark panel, grid lines, a luminosity (gray) filled area, then colored R/G/B filled areas and strokes.
 func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.NRGBA {
 	if width <= 0 {
 		width = 512
@@ -117,82 +117,229 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 	if bins == 0 {
 		bins = len(histB)
 	}
-	// create image with black background so colored overlays are visible
+	if bins == 0 {
+		bins = 256
+	}
+
+	// panel colors
+	panelOuter := [4]uint8{20, 20, 20, 255} // very dark
+	panelInner := [4]uint8{28, 28, 28, 255} // slightly lighter
+	gridCol := [3]uint8{60, 60, 60}
+
+	// create image and fill with panel outer then inner rectangle (padding)
 	out := image.NewNRGBA(image.Rect(0, 0, width, height))
 	for i := 0; i < len(out.Pix); i += 4 {
-		out.Pix[i+0] = 0
-		out.Pix[i+1] = 0
-		out.Pix[i+2] = 0
+		out.Pix[i+0] = panelOuter[0]
+		out.Pix[i+1] = panelOuter[1]
+		out.Pix[i+2] = panelOuter[2]
 		out.Pix[i+3] = 255
 	}
-	// find max across channels
-	maxv := 1
-	for _, v := range histR {
-		if v > maxv {
-			maxv = v
-		}
+	pad := int(math.Round(float64(height) * 0.06))
+	if pad < 6 {
+		pad = 6
 	}
-	for _, v := range histG {
-		if v > maxv {
-			maxv = v
-		}
+	left := pad + 8
+	right := width - (pad + 8)
+	top := pad
+	bottom := height - pad
+	if left >= right || top >= bottom {
+		// fallback: single padding
+		left = pad
+		right = width - pad
+		top = pad
+		bottom = height - pad
 	}
-	for _, v := range histB {
-		if v > maxv {
-			maxv = v
+	// fill inner rect
+	for y := top; y < bottom; y++ {
+		for x := left; x < right; x++ {
+			i := out.PixOffset(x, y)
+			out.Pix[i+0] = panelInner[0]
+			out.Pix[i+1] = panelInner[1]
+			out.Pix[i+2] = panelInner[2]
+			out.Pix[i+3] = 255
 		}
 	}
 
-	// draw each bin as a vertical line at x position (semi-transparent overlays)
-	for x := 0; x < width; x++ {
-		// determine bin index
-		bin := int(math.Floor(float64(x) * float64(bins) / float64(width)))
-		if bin < 0 {
-			bin = 0
+	plotW := right - left
+	plotH := bottom - top
+	if plotW <= 0 || plotH <= 0 {
+		return out
+	}
+
+	// Convert histograms to float arrays resampled to plotW with linear interpolation
+	resample := func(hist []int) []float64 {
+		dst := make([]float64, plotW)
+		if len(hist) == 0 {
+			return dst
 		}
-		if bin >= bins {
-			bin = bins - 1
+		maxIdx := float64(len(hist) - 1)
+		for xi := 0; xi < plotW; xi++ {
+			pos := float64(xi) * maxIdx / float64(plotW-1)
+			lo := int(math.Floor(pos))
+			hi := int(math.Ceil(pos))
+			if lo < 0 {
+				lo = 0
+			}
+			if hi >= len(hist) {
+				hi = len(hist) - 1
+			}
+			if lo == hi {
+				dst[xi] = float64(hist[lo])
+			} else {
+				frac := pos - float64(lo)
+				dst[xi] = (1-frac)*float64(hist[lo]) + frac*float64(hist[hi])
+			}
 		}
-		// compute heights
-		rh := int(math.Round(float64(histR[bin]) / float64(maxv) * float64(height-1)))
-		gh := int(math.Round(float64(histG[bin]) / float64(maxv) * float64(height-1)))
-		bh := int(math.Round(float64(histB[bin]) / float64(maxv) * float64(height-1)))
-		// blending parameters (alpha for overlay color)
-		const alpha = 0.6
-		invAlpha := 1.0 - alpha
-		// draw from bottom up, blending each overlay against current pixel
-		for y := 0; y < rh; y++ {
-			i := out.PixOffset(x, height-1-y)
-			// blend red overlay (255,0,0) with existing pixel
-			// new = alpha*overlay + (1-alpha)*dst
-			dstR := float64(out.Pix[i+0])
-			dstG := float64(out.Pix[i+1])
-			dstB := float64(out.Pix[i+2])
-			// overlay red = 255,0,0
-			out.Pix[i+0] = uint8(math.Round(alpha*255.0 + invAlpha*dstR))
-			out.Pix[i+1] = uint8(math.Round(invAlpha * dstG))
-			out.Pix[i+2] = uint8(math.Round(invAlpha * dstB))
+		return dst
+	}
+
+	rF := resample(histR)
+	gF := resample(histG)
+	bF := resample(histB)
+	// approximate luminosity histogram by weighted sum of channels per bin (use 'bins' length)
+	lumBins := make([]float64, bins)
+	for i := 0; i < bins; i++ {
+		rv := 0.0
+		gv := 0.0
+		bv := 0.0
+		if i < len(histR) {
+			rv = float64(histR[i])
 		}
-		for y := 0; y < gh; y++ {
-			i := out.PixOffset(x, height-1-y)
-			// blend green overlay (0,255,0)
-			dstR := float64(out.Pix[i+0])
-			dstG := float64(out.Pix[i+1])
-			dstB := float64(out.Pix[i+2])
-			out.Pix[i+0] = uint8(math.Round(invAlpha * dstR))
-			out.Pix[i+1] = uint8(math.Round(alpha*255.0 + invAlpha*dstG))
-			out.Pix[i+2] = uint8(math.Round(invAlpha * dstB))
+		if i < len(histG) {
+			gv = float64(histG[i])
 		}
-		for y := 0; y < bh; y++ {
-			i := out.PixOffset(x, height-1-y)
-			// blend blue overlay (0,0,255)
-			dstR := float64(out.Pix[i+0])
-			dstG := float64(out.Pix[i+1])
-			dstB := float64(out.Pix[i+2])
-			out.Pix[i+0] = uint8(math.Round(invAlpha * dstR))
-			out.Pix[i+1] = uint8(math.Round(invAlpha * dstG))
-			out.Pix[i+2] = uint8(math.Round(alpha*255.0 + invAlpha*dstB))
+		if i < len(histB) {
+			bv = float64(histB[i])
+		}
+		lumBins[i] = 0.299*rv + 0.587*gv + 0.114*bv
+	}
+	// resample float64 histogram to plot width
+	resampleFloat := func(hist []float64) []float64 {
+		dst := make([]float64, plotW)
+		if len(hist) == 0 {
+			return dst
+		}
+		maxIdx := float64(len(hist) - 1)
+		if plotW == 1 {
+			tot := 0.0
+			for _, v := range hist {
+				tot += v
+			}
+			dst[0] = tot / float64(len(hist))
+			return dst
+		}
+		for xi := 0; xi < plotW; xi++ {
+			pos := float64(xi) * maxIdx / float64(plotW-1)
+			lo := int(math.Floor(pos))
+			hi := int(math.Ceil(pos))
+			if lo < 0 {
+				lo = 0
+			}
+			if hi >= len(hist) {
+				hi = len(hist) - 1
+			}
+			if lo == hi {
+				dst[xi] = hist[lo]
+			} else {
+				frac := pos - float64(lo)
+				dst[xi] = (1-frac)*hist[lo] + frac*hist[hi]
+			}
+		}
+		return dst
+	}
+	lumF := resampleFloat(lumBins)
+
+	// find max across resampled arrays
+	maxv := 1.0
+	for _, a := range [][]float64{rF, gF, bF, lumF} {
+		for _, v := range a {
+			if v > maxv {
+				maxv = v
+			}
 		}
 	}
+	if maxv <= 0 {
+		maxv = 1
+	}
+
+	// normalize to 0..1
+	norm := func(v float64) float64 { return v / maxv }
+
+	// draw horizontal grid lines (4 lines)
+	gridLines := 4
+	for gi := 0; gi <= gridLines; gi++ {
+		y := top + int(math.Round(float64(plotH)*float64(gi)/float64(gridLines)))
+		if y < top || y >= bottom {
+			continue
+		}
+		for x := left; x < right; x++ {
+			i := out.PixOffset(x, y)
+			out.Pix[i+0] = uint8(gridCol[0])
+			out.Pix[i+1] = uint8(gridCol[1])
+			out.Pix[i+2] = uint8(gridCol[2])
+			out.Pix[i+3] = 255
+		}
+	}
+
+	// helper blend dst, overlay with alpha (0..1)
+	blendChannel := func(dst uint8, overlay uint8, alpha float64) uint8 {
+		return uint8(math.Round(alpha*float64(overlay) + (1.0-alpha)*float64(dst)))
+	}
+
+	// fill area under a curve (plotX -> normalized 0..1 values) with color and alpha
+	fillArea := func(values []float64, col [3]uint8, alpha float64) {
+		for xi := 0; xi < plotW; xi++ {
+			v := norm(values[xi])
+			if v < 0 {
+				v = 0
+			}
+			if v > 1 {
+				v = 1
+			}
+			yp := top + (plotH - 1) - int(math.Round(v*float64(plotH-1)))
+			if yp < top {
+				yp = top
+			}
+			if yp >= bottom {
+				yp = bottom - 1
+			}
+			for y := yp; y < bottom; y++ {
+				i := out.PixOffset(left+xi, y)
+				out.Pix[i+0] = blendChannel(out.Pix[i+0], col[0], alpha)
+				out.Pix[i+1] = blendChannel(out.Pix[i+1], col[1], alpha)
+				out.Pix[i+2] = blendChannel(out.Pix[i+2], col[2], alpha)
+			}
+		}
+	}
+
+	// stroke curve (thin line) by setting a 1px colored outline with stronger alpha
+	strokeCurve := func(values []float64, col [3]uint8, alpha float64) {
+		for xi := 0; xi < plotW; xi++ {
+			v := norm(values[xi])
+			yp := top + (plotH - 1) - int(math.Round(v*float64(plotH-1)))
+			if yp < top || yp >= bottom {
+				continue
+			}
+			i := out.PixOffset(left+xi, yp)
+			out.Pix[i+0] = blendChannel(out.Pix[i+0], col[0], alpha)
+			out.Pix[i+1] = blendChannel(out.Pix[i+1], col[1], alpha)
+			out.Pix[i+2] = blendChannel(out.Pix[i+2], col[2], alpha)
+		}
+	}
+
+	// draw luminosity filled area (gray) first
+	fillArea(lumF, [3]uint8{100, 110, 120}, 0.45)
+	// then colored fills (lower alpha) so they tint the luminosity
+	fillArea(bF, [3]uint8{65, 120, 210}, 0.20) // blue-ish
+	fillArea(gF, [3]uint8{70, 200, 120}, 0.18) // green-ish
+	fillArea(rF, [3]uint8{220, 90, 90}, 0.16)  // red-ish
+
+	// strokes
+	strokeCurve(bF, [3]uint8{80, 140, 230}, 0.9)
+	strokeCurve(gF, [3]uint8{120, 230, 140}, 0.9)
+	strokeCurve(rF, [3]uint8{250, 120, 120}, 0.9)
+	// a faint stroke for luminosity
+	strokeCurve(lumF, [3]uint8{180, 180, 180}, 0.35)
+
 	return out
 }
