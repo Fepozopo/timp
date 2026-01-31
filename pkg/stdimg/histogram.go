@@ -117,12 +117,12 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 	if bins == 0 {
 		bins = len(histB)
 	}
-	// create image with white background
+	// create image with black background so colored overlays are visible
 	out := image.NewNRGBA(image.Rect(0, 0, width, height))
 	for i := 0; i < len(out.Pix); i += 4 {
-		out.Pix[i+0] = 255
-		out.Pix[i+1] = 255
-		out.Pix[i+2] = 255
+		out.Pix[i+0] = 0
+		out.Pix[i+1] = 0
+		out.Pix[i+2] = 0
 		out.Pix[i+3] = 255
 	}
 	// find max across channels
