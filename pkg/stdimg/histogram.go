@@ -143,7 +143,7 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 		}
 	}
 
-	// draw each bin as a vertical line at x position
+	// draw each bin as a vertical line at x position (semi-transparent overlays)
 	for x := 0; x < width; x++ {
 		// determine bin index
 		bin := int(math.Floor(float64(x) * float64(bins) / float64(width)))
@@ -157,21 +157,41 @@ func RenderHistogramImage(histR, histG, histB []int, width, height int) *image.N
 		rh := int(math.Round(float64(histR[bin]) / float64(maxv) * float64(height-1)))
 		gh := int(math.Round(float64(histG[bin]) / float64(maxv) * float64(height-1)))
 		bh := int(math.Round(float64(histB[bin]) / float64(maxv) * float64(height-1)))
-		// draw from bottom up
+		// blending parameters (alpha for overlay color)
+		const alpha = 0.6
+		invAlpha := 1.0 - alpha
+		// draw from bottom up, blending each overlay against current pixel
 		for y := 0; y < rh; y++ {
 			i := out.PixOffset(x, height-1-y)
-			// red channel overlay: set red channel to max
-			out.Pix[i+0] = 255
-			// blend by max for simplicity; keep other channels as background
+			// blend red overlay (255,0,0) with existing pixel
+			// new = alpha*overlay + (1-alpha)*dst
+			dstR := float64(out.Pix[i+0])
+			dstG := float64(out.Pix[i+1])
+			dstB := float64(out.Pix[i+2])
+			// overlay red = 255,0,0
+			out.Pix[i+0] = uint8(math.Round(alpha*255.0 + invAlpha*dstR))
+			out.Pix[i+1] = uint8(math.Round(invAlpha * dstG))
+			out.Pix[i+2] = uint8(math.Round(invAlpha * dstB))
 		}
 		for y := 0; y < gh; y++ {
 			i := out.PixOffset(x, height-1-y)
-			// set green
-			out.Pix[i+1] = 255
+			// blend green overlay (0,255,0)
+			dstR := float64(out.Pix[i+0])
+			dstG := float64(out.Pix[i+1])
+			dstB := float64(out.Pix[i+2])
+			out.Pix[i+0] = uint8(math.Round(invAlpha * dstR))
+			out.Pix[i+1] = uint8(math.Round(alpha*255.0 + invAlpha*dstG))
+			out.Pix[i+2] = uint8(math.Round(invAlpha * dstB))
 		}
 		for y := 0; y < bh; y++ {
 			i := out.PixOffset(x, height-1-y)
-			out.Pix[i+2] = 255
+			// blend blue overlay (0,0,255)
+			dstR := float64(out.Pix[i+0])
+			dstG := float64(out.Pix[i+1])
+			dstB := float64(out.Pix[i+2])
+			out.Pix[i+0] = uint8(math.Round(invAlpha * dstR))
+			out.Pix[i+1] = uint8(math.Round(invAlpha * dstG))
+			out.Pix[i+2] = uint8(math.Round(alpha*255.0 + invAlpha*dstB))
 		}
 	}
 	return out
