@@ -11,8 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/joho/godotenv"
 )
 
 // Terminal preview helper for Kitty and iTerm2 inline-image protocols.
@@ -37,8 +35,7 @@ import (
 var previewDebug bool
 
 func init() {
-	err := godotenv.Load()
-	if err != nil {
+	if err := LoadDotEnv(".env"); err != nil {
 		// Ignore error if .env not present; it's optional
 	}
 
