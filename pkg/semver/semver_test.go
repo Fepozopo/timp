@@ -27,6 +27,35 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+func TestParseSignatureInBuild(t *testing.T) {
+	v, err := Parse("1.2.3+sig.sha256.deadbeef")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if v.Build != "sig.sha256.deadbeef" {
+		t.Fatalf("expected Build to be preserved; got %q", v.Build)
+	}
+	if v.Signature == nil {
+		t.Fatalf("expected signature to be parsed")
+	}
+	if v.Signature.Algo != "sha256" || v.Signature.Hex != "deadbeef" {
+		t.Fatalf("unexpected signature parsed: %#v", v.Signature)
+	}
+	// String() should include the build metadata unchanged
+	if s := v.String(); s != "1.2.3+sig.sha256.deadbeef" {
+		t.Fatalf("String() = %q; want %q", s, "1.2.3+sig.sha256.deadbeef")
+	}
+
+	// also allow sig.<hex> (default algo)
+	v2, err := Parse("1.2.3+build.1.sig.abcdef")
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if v2.Signature == nil || v2.Signature.Hex != "abcdef" {
+		t.Fatalf("expected signature hex abcdef; got %#v", v2.Signature)
+	}
+}
+
 func TestParseInvalid(t *testing.T) {
 	cases := []string{"1.2", "a.b.c", "1.2.x", ""}
 	for _, c := range cases {
