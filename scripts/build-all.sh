@@ -51,8 +51,8 @@ for plat in "${PLATFORMS[@]}"; do
 done
 
 # After building, produce canonical checksums.txt and sign it if a private
-# seed is available in ED25519_PRIVATE_SEED (Base64). This keeps signing
-# logic colocated with builds for simple CI setups.
+# seed file exists at $ROOT/ed25519_seed.bin. This keeps signing logic
+# colocated with builds for simple CI setups.
 OUTDIR="$BIN_DIR"
 CHECKS="$OUTDIR/checksums.txt"
 echo "# release: ${TAG:-local}" > "$CHECKS"
@@ -66,12 +66,13 @@ for f in $(ls -1 "$OUTDIR" | sort); do
   printf "%s  %s\n" "$h" "$f" >> "$CHECKS"
 done
 
-if [ -n "${ED25519_PRIVATE_SEED:-}" ]; then
-  echo "Signing checksums.txt with ED25519_PRIVATE_SEED"
-  # sign_checksums.go expects ED25519_PRIVATE_SEED env var
-  go run "$ROOT/scripts/sign_checksums.go" "$CHECKS"
+SEED_FILE="$ROOT/ed25519_seed.bin"
+if [ -f "$SEED_FILE" ]; then
+  echo "Signing checksums.txt with seed file $SEED_FILE"
+  # sign_checksums.go expects a seed file path as the second argument
+  go run "$ROOT/scripts/sign_checksums/sign_checksums.go" "$CHECKS" "$SEED_FILE"
 else
-  echo "ED25519_PRIVATE_SEED not set; skipping signing of checksums.txt"
+  echo "No seed file at $SEED_FILE; skipping signing of checksums.txt"
 fi
 
 echo "Builds complete. Binaries available under: $BIN_DIR"
