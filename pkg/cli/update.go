@@ -21,8 +21,14 @@ import (
 
 // Release is a minimal release descriptor used by detectLatestRelease.
 type Release struct {
-	Version  semver.Version
-	AssetURL string
+	Version   semver.Version
+	AssetURL  string
+	AssetName string
+	// ChecksumsURL points to the checksums.txt asset for the release (containing
+	// sha256 hashes for release assets). ChecksumsSigURL is the detached
+	// ed25519 signature (hex) for the checksums file.
+	ChecksumsURL    string
+	ChecksumsSigURL string
 }
 
 // detectLatestRelease queries the GitHub Releases API and returns the best-match
@@ -64,10 +70,12 @@ func detectLatestRelease(repo string) (*Release, bool, error) {
 	}
 
 	type candidate struct {
-		ver      semver.Version
-		tag      string
-		assetURL string
-		name     string
+		ver          semver.Version
+		tag          string
+		assetURL     string
+		name         string
+		checksumsURL string
+		checksumsSig string
 	}
 
 	var candidates []candidate
@@ -101,19 +109,33 @@ func detectLatestRelease(repo string) (*Release, bool, error) {
 			}
 		}
 		assetURL := ""
-		// pick first available asset (prefer ones that look like binaries)
+		assetName := ""
+		checksumsURL := ""
+		checksumsSig := ""
+		// find assets: prefer binary-like asset for download, and capture
+		// checksums and signature assets if present.
 		for _, a := range r.Assets {
 			nameLower := strings.ToLower(a.Name)
+			if nameLower == "checksums.txt" {
+				checksumsURL = a.BrowserDownloadURL
+				continue
+			}
+			if nameLower == "checksums.txt.sig" || nameLower == "checksums.sig" || nameLower == "checksums.txt.asc" || nameLower == "checksums.asc" {
+				checksumsSig = a.BrowserDownloadURL
+				continue
+			}
 			if strings.Contains(nameLower, "darwin") || strings.Contains(nameLower, "linux") || strings.Contains(nameLower, "windows") || strings.Contains(nameLower, "amd64") || strings.Contains(nameLower, "arm64") {
 				assetURL = a.BrowserDownloadURL
+				assetName = a.Name
 				break
 			}
 			// fallback to first asset if nothing matches
 			if assetURL == "" {
 				assetURL = a.BrowserDownloadURL
+				assetName = a.Name
 			}
 		}
-		candidates = append(candidates, candidate{ver: v, tag: tag, assetURL: assetURL, name: r.Name})
+		candidates = append(candidates, candidate{ver: v, tag: tag, assetURL: assetURL, name: assetName, checksumsURL: checksumsURL, checksumsSig: checksumsSig})
 	}
 
 	if len(candidates) == 0 {
@@ -128,8 +150,11 @@ func detectLatestRelease(repo string) (*Release, bool, error) {
 
 	// Build a selfupdate.Release-like struct (only include fields present in the actual type)
 	r := &Release{
-		Version:  best.ver,
-		AssetURL: best.assetURL,
+		Version:         best.ver,
+		AssetURL:        best.assetURL,
+		AssetName:       best.name,
+		ChecksumsURL:    best.checksumsURL,
+		ChecksumsSigURL: best.checksumsSig,
 	}
 	return r, true, nil
 }
@@ -176,6 +201,13 @@ func CheckForUpdates() error {
 		return nil
 	}
 
+	// We require signed checksums to be present for the release. If missing,
+	// refuse to update (enforces signed releases).
+	if latest.ChecksumsURL == "" || latest.ChecksumsSigURL == "" {
+		fmt.Printf("A new version (%s) is available but the release is missing checksums or signature; update aborted.\n", latest.Version)
+		return nil
+	}
+
 	// Prompt the user to confirm updating.
 	answer, perr := PromptLine(fmt.Sprintf("A new version (%s) is available. Update now? (y/N): ", latest.Version))
 	if perr != nil {
@@ -187,14 +219,57 @@ func CheckForUpdates() error {
 		return nil
 	}
 
-	fmt.Println("Updating...")
+	fmt.Println("Verifying release checksums signature...")
+	// Download checksums and signature
+	ckResp, err := http.Get(latest.ChecksumsURL)
+	if err != nil {
+		return fmt.Errorf("failed downloading checksums: %w", err)
+	}
+	ckBody, err := io.ReadAll(ckResp.Body)
+	_ = ckResp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("failed reading checksums: %w", err)
+	}
+	sigResp, err := http.Get(latest.ChecksumsSigURL)
+	if err != nil {
+		return fmt.Errorf("failed downloading checksums signature: %w", err)
+	}
+	sigBody, err := io.ReadAll(sigResp.Body)
+	_ = sigResp.Body.Close()
+	if err != nil {
+		return fmt.Errorf("failed reading checksums signature: %w", err)
+	}
+
+	// Verify signature using embedded trusted public key(s).
+	if err := verifyChecksumsSignature(ckBody, string(sigBody), TrustedPubKeysHex); err != nil {
+		return fmt.Errorf("checksums signature verification failed: %w", err)
+	}
+
+	// Parse checksums and find expected hash for the chosen asset.
+	checks := parseChecksums(ckBody)
+	expected, ok := checks[latest.AssetName]
+	if !ok || expected == "" {
+		// Try fallback: use basename of asset URL
+		if latest.AssetURL != "" {
+			base := filepath.Base(latest.AssetURL)
+			if v, ok2 := checks[base]; ok2 {
+				expected = v
+				ok = true
+			}
+		}
+	}
+	if !ok || expected == "" {
+		return fmt.Errorf("no checksum entry found for asset %q in checksums.txt", latest.AssetName)
+	}
+
+	fmt.Println("Checksums signature valid; downloading and verifying artifact...")
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not locate executable: %w", err)
 	}
 
-	// Download to temp and atomically replace the executable.
-	if err := downloadAndAtomicReplace(latest.AssetURL, exe); err != nil {
+	// Download, verify checksum, and atomically replace the executable.
+	if err := downloadAndVerifyAndReplace(latest.AssetURL, expected, exe); err != nil {
 		return fmt.Errorf("update failed: %w", err)
 	}
 
