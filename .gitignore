@@ -1,6 +1,5 @@
 bin/
 .env
-out/
 testdata/
 demofiles/
-TODO.md
+ed25519_seed.bin
