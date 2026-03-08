@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+TAG=v0.6.2
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -37,7 +39,7 @@ for plat in "${PLATFORMS[@]}"; do
   GOOS=${plat%/*}
   GOARCH=${plat#*/}
 
-  for cmd in "${CMD_DIRS[@]}"; do
+    for cmd in "${CMD_DIRS[@]}"; do
     # Place binary directly in $BIN_DIR with filename: <cmd>-<os>-<arch>
     outfile="$BIN_DIR/${cmd}-${GOOS}-${GOARCH}"
     if [ "$GOOS" = "windows" ]; then outfile="${outfile}.exe"; fi
@@ -47,5 +49,29 @@ for plat in "${PLATFORMS[@]}"; do
     env CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w" -o "$outfile" "./cmd/$cmd"
   done
 done
+
+# After building, produce canonical checksums.txt and sign it if a private
+# seed is available in ED25519_PRIVATE_SEED (Base64). This keeps signing
+# logic colocated with builds for simple CI setups.
+OUTDIR="$BIN_DIR"
+CHECKS="$OUTDIR/checksums.txt"
+echo "# release: ${TAG:-local}" > "$CHECKS"
+for f in $(ls -1 "$OUTDIR" | sort); do
+  [[ "$f" == "checksums.txt" || "$f" == "checksums.txt.sig" ]] && continue
+  if command -v sha256sum >/dev/null 2>&1; then
+    h=$(sha256sum "$OUTDIR/$f" | awk '{print $1}')
+  else
+    h=$(shasum -a 256 "$OUTDIR/$f" | awk '{print $1}')
+  fi
+  printf "%s  %s\n" "$h" "$f" >> "$CHECKS"
+done
+
+if [ -n "${ED25519_PRIVATE_SEED:-}" ]; then
+  echo "Signing checksums.txt with ED25519_PRIVATE_SEED"
+  # sign_checksums.go expects ED25519_PRIVATE_SEED env var
+  go run "$ROOT/scripts/sign_checksums.go" "$CHECKS"
+else
+  echo "ED25519_PRIVATE_SEED not set; skipping signing of checksums.txt"
+fi
 
 echo "Builds complete. Binaries available under: $BIN_DIR"
